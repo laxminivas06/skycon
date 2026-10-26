@@ -342,7 +342,7 @@ async function runAllTests() {
     assert(circleMission.missionType === 'CIRCLE', 'Generated missionType is CIRCLE');
     assert(circleMission.waypoints.length >= 10, `Generated ${circleMission.waypoints.length} tactical waypoints for circular flight`);
     assert(circleMission.altitude === 5.0, 'Mission altitude verified as 5.0m');
-    assert(circleMission.geometry.circleRadiusMeters === 10, 'Mission radius recorded as 10m');
+    assert(circleMission.geometry?.circleRadiusMeters === 10, 'Mission radius recorded as 10m');
   }
 
   // --------------------------------------------------------------------------
