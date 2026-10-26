@@ -1,0 +1,26 @@
+# Recondetectionpanel Subsyste
+
+> 2 nodes · cohesion 1.00
+
+## Key Concepts
+
+- [ReconDetectionPanel](file:///C:/Antigravityyyyy/last%20drone/skycon/frontend/src/features/dashboard/ReconDetectionPanel.tsx#L34) (1 connections)
+- [ReconDetectionPanel.tsx](file:///C:/Antigravityyyyy/last%20drone/skycon/frontend/src/features/dashboard/ReconDetectionPanel.tsx#L1) (1 connections)
+
+## Relationships
+
+- No strong cross-community connections detected
+
+## Source Files
+
+- [skycon\frontend\src\features\dashboard\ReconDetectionPanel.tsx](file:///C:/Antigravityyyyy/last%20drone/skycon/frontend/src/features/dashboard/ReconDetectionPanel.tsx)
+
+## Audit Trail
+
+- EXTRACTED: 2 (100%)
+- INFERRED: 0 (0%)
+- AMBIGUOUS: 0 (0%)
+
+---
+
+*Part of the graphify knowledge wiki. See [[index]] to navigate.*

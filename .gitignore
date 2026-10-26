@@ -50,3 +50,8 @@ android/.cxx/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+graphify-out/cache/
+graphify-out/.graphify_python
+graphify-out/.graphify_root
+graphify-out/.graphify_uncached.txt
