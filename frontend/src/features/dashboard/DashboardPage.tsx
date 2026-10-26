@@ -65,7 +65,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
     isExecuting: boolean;
   } | null>(null);
 
-  const rtlTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const rtlTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const userSelectedModeRef = useRef<boolean>(false);
   const initialSyncDoneRef = useRef<boolean>(false);
 

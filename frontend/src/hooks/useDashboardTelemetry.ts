@@ -54,7 +54,7 @@ export const useDashboardTelemetry = (): DashboardTelemetryData => {
   const [isLinkLost, setIsLinkLost] = useState<boolean>(false);
 
   const lastUpdateRef = useRef<number>(0);
-  const pendingUpdateTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const pendingUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastCoordsRef = useRef<{ lat: number; lon: number }>({ lat: 0, lon: 0 });
 
   useEffect(() => {
