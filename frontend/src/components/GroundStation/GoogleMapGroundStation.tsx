@@ -49,8 +49,7 @@ import {
   Video,
   X,
   Plus,
-  Minus,
-  User
+  Minus
 } from 'lucide-react';
 
 interface GoogleMapGroundStationProps {
@@ -159,10 +158,6 @@ export const GoogleMapGroundStation: React.FC<GoogleMapGroundStationProps> = ({
 
   // Auto-Centering and Location Tracking References
   const hasAutoCenteredOnDroneRef = useRef<boolean>(false);
-  const operatorMarkerRef = useRef<L.Marker | null>(null);
-  const operatorAccuracyCircleRef = useRef<L.Circle | null>(null);
-  const [isDetectingOperatorLocation, setIsDetectingOperatorLocation] = useState<boolean>(false);
-  const [operatorLocation, setOperatorLocation] = useState<{ lat: number; lng: number; accuracy: number } | null>(null);
 
   // Drone marker references
   const droneMarkerRef = useRef<L.Marker | null>(null);
@@ -855,7 +850,7 @@ export const GoogleMapGroundStation: React.FC<GoogleMapGroundStationProps> = ({
   };
 
   // -------------------------------------------------------------
-  // Map Centering Actions & Operator Geolocation
+  // Map Centering Actions (Drone & Home)
   // -------------------------------------------------------------
   const handleRecenterDrone = () => {
     const map = mapInstanceRef.current;
@@ -902,82 +897,8 @@ export const GoogleMapGroundStation: React.FC<GoogleMapGroundStationProps> = ({
     }
   };
 
-  const handleGetOperatorLocation = () => {
-    const map = mapInstanceRef.current;
-    if (!map) return;
 
-    if (!navigator.geolocation) {
-      setErrorMessage('Browser geolocation is not supported on this device.');
-      return;
-    }
 
-    setIsDetectingOperatorLocation(true);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setIsDetectingOperatorLocation(false);
-        const { latitude, longitude, accuracy } = pos.coords;
-        setOperatorLocation({ lat: latitude, lng: longitude, accuracy });
-
-        // Update or create operator marker
-        if (operatorMarkerRef.current) {
-          operatorMarkerRef.current.setLatLng([latitude, longitude]);
-        } else {
-          const operatorIcon = L.divIcon({
-            className: 'operator-location-marker',
-            html: `
-              <div style="background: #2563eb; width: 30px; height: 30px; border-radius: 50%; border: 2.5px solid #ffffff; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 10px rgba(37, 99, 235, 0.7);">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/>
-                  <circle cx="12" cy="7" r="4"/>
-                </svg>
-              </div>
-            `,
-            iconSize: [30, 30],
-            iconAnchor: [15, 15]
-          });
-
-          const marker = L.marker([latitude, longitude], { icon: operatorIcon, zIndexOffset: 700 });
-          marker.bindPopup(`
-            <div class="space-y-1">
-              <div class="font-bold text-blue-400">OPERATOR / DEVICE LOCATION</div>
-              <div class="text-[10px] text-slate-300">Lat: ${latitude.toFixed(6)} | Lon: ${longitude.toFixed(6)}</div>
-              <div class="text-[10px] text-slate-400">Accuracy: ±${accuracy.toFixed(1)}m</div>
-              <div class="text-[9px] text-slate-500 italic mt-1">(Ground Station device position, distinct from drone)</div>
-            </div>
-          `, { className: 'tactical-popup' });
-          marker.addTo(map);
-          operatorMarkerRef.current = marker;
-        }
-
-        // Update or create accuracy circle
-        if (operatorAccuracyCircleRef.current) {
-          operatorAccuracyCircleRef.current.setLatLng([latitude, longitude]);
-          operatorAccuracyCircleRef.current.setRadius(accuracy);
-        } else {
-          const circle = L.circle([latitude, longitude], {
-            radius: accuracy,
-            color: '#3b82f6',
-            fillColor: '#3b82f6',
-            fillOpacity: 0.1,
-            weight: 1,
-            dashArray: '3, 3'
-          }).addTo(map);
-          operatorAccuracyCircleRef.current = circle;
-        }
-
-        audioService.playBeep(880, 80);
-      },
-      (err) => {
-        setIsDetectingOperatorLocation(false);
-        let msg = 'Unable to get device location.';
-        if (err.code === 1) msg = 'Location access was denied in browser settings.';
-        else if (err.code === 2) msg = 'Device location is unavailable.';
-        else if (err.code === 3) msg = 'Location request timed out.';
-        setErrorMessage(msg);
-      },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
-    );
-  };
 
   const handleCenterHome = () => {
     const map = mapInstanceRef.current;
@@ -1480,21 +1401,6 @@ export const GoogleMapGroundStation: React.FC<GoogleMapGroundStationProps> = ({
               title="Locate Home Point"
             >
               <Home className="w-4 h-4 text-sky-400" />
-            </button>
-
-            {/* Operator Device Location (Browser Geolocation - distinct from drone) */}
-            <button
-              type="button"
-              onClick={handleGetOperatorLocation}
-              disabled={isDetectingOperatorLocation}
-              className={`p-2 rounded-lg text-xs font-bold flex items-center justify-center transition cursor-pointer ${
-                isDetectingOperatorLocation
-                  ? 'bg-blue-900/60 text-blue-200 animate-pulse'
-                  : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-              }`}
-              title="Locate Operator / Ground Station Device (Browser Geolocation)"
-            >
-              <User className="w-4 h-4 text-blue-400" />
             </button>
           </div>
         )}

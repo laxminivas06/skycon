@@ -81,6 +81,14 @@ async function runTests() {
     assert(!serviceFile.includes('navigator.geolocation'), 'Never uses browser or mobile geolocation for Pixhawk GPS');
     assert(serviceFile.includes('sats >= 6'), 'Pixhawk GPS Fix requires at least 6 satellites for 3D Lock');
 
+    // Verify Ground Station map panels do NOT use mobile or browser geolocation
+    const mapPanelFile = fs.readFileSync(path.resolve(__dirname, '../frontend/src/features/dashboard/MapPanel.tsx'), 'utf-8');
+    assert(!mapPanelFile.includes('navigator.geolocation'), 'MapPanel never uses browser or mobile geolocation');
+    assert(!mapPanelFile.includes('deviceLocation'), 'MapPanel contains no mobile device location state or markers');
+    const gcsMapFile = fs.readFileSync(path.resolve(__dirname, '../frontend/src/components/GroundStation/GoogleMapGroundStation.tsx'), 'utf-8');
+    assert(!gcsMapFile.includes('navigator.geolocation'), 'GoogleMapGroundStation never uses browser or mobile geolocation');
+    assert(!gcsMapFile.includes('operatorLocation'), 'GoogleMapGroundStation contains no operator mobile location state');
+
     // 3. Short status diagnostic message format
     const headerFile = fs.readFileSync(path.resolve(__dirname, '../frontend/src/features/dashboard/Header.tsx'), 'utf-8');
     assert(headerFile.includes('Wi-Fi Connected | MAVLink Disconnected | GPS Acquiring') || headerFile.includes('shortDiagnosticString'),

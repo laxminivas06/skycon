@@ -12,11 +12,9 @@ import {
   Check,
   Shield,
   X,
-  Smartphone,
   Navigation,
   Target,
   Home,
-  RefreshCw,
   Pencil,
   Circle as CircleIcon,
   Disc,
@@ -45,16 +43,6 @@ interface MapPanelProps {
   telemetry: DashboardTelemetryData;
   className?: string;
   onWaypointAdded?: (lat: number, lon: number) => void;
-}
-
-interface DeviceLocation {
-  lat: number;
-  lon: number;
-  accuracy: number;
-  altitude?: number | null;
-  heading?: number | null;
-  speed?: number | null;
-  timestamp: number;
 }
 
 const TILE_SERVERS = {
@@ -118,23 +106,16 @@ export const MapPanel: React.FC<MapPanelProps> = ({
     return groundStationMissionService.subscribeCircleRadius((r) => setCircleRadius(r));
   }, []);
 
-  // Ground Station Device (Mobile / PC) Geolocation State
-  const [deviceLocation, setDeviceLocation] = useState<DeviceLocation | null>(null);
-  const [deviceGpsStatus, setDeviceGpsStatus] = useState<'idle' | 'locating' | 'locked' | 'denied' | 'unsupported' | 'error'>('idle');
-  const [deviceGpsError, setDeviceGpsError] = useState<string | null>(null);
-  const [followMode, setFollowMode] = useState<'none' | 'drone' | 'device'>('none');
+  // Drone Tracking & Map Follow Mode
+  const [followMode, setFollowMode] = useState<'none' | 'drone'>('none');
   const [homePoint, setHomePoint] = useState<HomePoint>(mavlinkService.getHomePoint());
-  const [activeGpsTab, setActiveGpsTab] = useState<'drone' | 'device'>('drone');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const activeTileLayerRef = useRef<L.TileLayer | null>(null);
   const droneMarkerRef = useRef<L.Marker | null>(null);
-  const deviceMarkerRef = useRef<L.Marker | null>(null);
-  const deviceAccuracyCircleRef = useRef<L.Circle | null>(null);
   const homeMarkerRef = useRef<L.Marker | null>(null);
-  const droneToDeviceLineRef = useRef<L.Polyline | null>(null);
   const targetBoxMarkerRef = useRef<L.Marker | null>(null);
   const captureSiteMarkerRef = useRef<L.Marker | null>(null);
   const targetVectorLineRef = useRef<L.Polyline | null>(null);
@@ -255,15 +236,6 @@ export const MapPanel: React.FC<MapPanelProps> = ({
       dashArray: '6, 6',
     }).addTo(map);
     missionPolylineRef.current = missionLine;
-
-    // Range vector line between Drone and GCS Device
-    const rangeLine = L.polyline([], {
-      color: '#38bdf8',
-      weight: 2,
-      opacity: 0.8,
-      dashArray: '3, 6',
-    }).addTo(map);
-    droneToDeviceLineRef.current = rangeLine;
 
     // Custom Drone HTML Marker with heading beam
     const droneIcon = L.divIcon({
@@ -552,169 +524,7 @@ export const MapPanel: React.FC<MapPanelProps> = ({
     return () => unsub();
   }, [showGeofence]);
 
-  // 3. Track Ground Station / Mobile / Device GPS via navigator.geolocation
-  useEffect(() => {
-    if (typeof window === 'undefined' || !navigator.geolocation) {
-      setDeviceGpsStatus('unsupported');
-      setDeviceGpsError('Geolocation is not supported on this browser/device.');
-      return;
-    }
-
-    setDeviceGpsStatus('locating');
-
-    const updatePosition = (pos: GeolocationPosition) => {
-      const { latitude, longitude, accuracy, altitude, heading, speed } = pos.coords;
-      const newLoc: DeviceLocation = {
-        lat: latitude,
-        lon: longitude,
-        accuracy: Math.round(accuracy),
-        altitude,
-        heading,
-        speed,
-        timestamp: pos.timestamp,
-      };
-
-      setDeviceLocation(newLoc);
-      setDeviceGpsStatus('locked');
-      setDeviceGpsError(null);
-
-      const map = mapRef.current;
-      if (!map) return;
-
-      // Update or create GCS Device Marker (Blue Tactical Pulse Beacon)
-      if (!deviceMarkerRef.current) {
-        const deviceIcon = L.divIcon({
-          className: 'gcs-device-leaflet-icon',
-          html: `
-            <div style="position: relative; width: 50px; height: 50px; margin-left: -25px; margin-top: -25px; display: flex; align-items: center; justify-content: center;">
-              <div style="position: absolute; inset: 0; border-radius: 50%; border: 1.5px solid rgba(59, 130, 246, 0.7); background: rgba(59, 130, 246, 0.15); animation: pulse 2.2s infinite;"></div>
-              <div style="width: 28px; height: 28px; border-radius: 50%; background: #2563EB; border: 2.5px solid #ffffff; box-shadow: 0 4px 12px rgba(37,99,235,0.7); display: flex; align-items: center; justify-content: center; position: relative;">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                  <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/>
-                  <line x1="12" y1="18" x2="12.01" y2="18"/>
-                </svg>
-              </div>
-            </div>
-          `,
-          iconSize: [50, 50],
-          iconAnchor: [25, 25],
-        });
-
-        const devMarker = L.marker([latitude, longitude], {
-          icon: deviceIcon,
-          zIndexOffset: 950,
-        }).bindTooltip(`📱 Ground Station (You) · ±${Math.round(accuracy)}m`, {
-          direction: 'top',
-          offset: [0, -18],
-        }).addTo(map);
-
-        deviceMarkerRef.current = devMarker;
-      } else {
-        deviceMarkerRef.current.setLatLng([latitude, longitude]);
-        deviceMarkerRef.current.setTooltipContent(`📱 Ground Station (You) · ±${Math.round(accuracy)}m`);
-      }
-
-      // Update or create Accuracy Circle
-      if (!deviceAccuracyCircleRef.current) {
-        const accCircle = L.circle([latitude, longitude], {
-          radius: Math.max(3, accuracy),
-          color: '#3b82f6',
-          weight: 1.5,
-          dashArray: '3, 4',
-          fillColor: '#3b82f6',
-          fillOpacity: 0.08,
-        }).addTo(map);
-        deviceAccuracyCircleRef.current = accCircle;
-      } else {
-        deviceAccuracyCircleRef.current.setLatLng([latitude, longitude]);
-        deviceAccuracyCircleRef.current.setRadius(Math.max(3, accuracy));
-      }
-
-      // If follow mode is active on device, pan map
-      if (followMode === 'device') {
-        map.panTo([latitude, longitude], { animate: true, duration: 0.4 });
-      }
-    };
-
-    const handleError = async (err: GeolocationPositionError) => {
-      console.warn('[MapPanel Geolocation]', err.message);
-      if (err.code === err.PERMISSION_DENIED) {
-        setDeviceGpsStatus('denied');
-        setDeviceGpsError('Browser location permission denied. Enable GPS in browser settings.');
-        return;
-      }
-
-      // Fallback to IP network location for PC testing without GPS chip
-      try {
-        const res = await fetch('https://ipapi.co/json/');
-        const data = await res.json();
-        if (data && data.latitude && data.longitude) {
-          const approxLoc: DeviceLocation = {
-            lat: data.latitude,
-            lon: data.longitude,
-            accuracy: 1200,
-            altitude: null,
-            heading: null,
-            speed: null,
-            timestamp: Date.now(),
-          };
-          setDeviceLocation(approxLoc);
-          setDeviceGpsStatus('locked');
-          setDeviceGpsError(`Approximate Network IP Location (${data.city || 'Local'})`);
-
-          const map = mapRef.current;
-          if (map) {
-            if (!deviceMarkerRef.current) {
-              const deviceIcon = L.divIcon({
-                className: 'gcs-device-leaflet-icon',
-                html: `
-                  <div style="position: relative; width: 50px; height: 50px; margin-left: -25px; margin-top: -25px; display: flex; align-items: center; justify-content: center;">
-                    <div style="position: absolute; inset: 0; border-radius: 50%; border: 1.5px solid rgba(59, 130, 246, 0.7); background: rgba(59, 130, 246, 0.15); animation: pulse 2.2s infinite;"></div>
-                    <div style="width: 28px; height: 28px; border-radius: 50%; background: #2563EB; border: 2.5px solid #ffffff; box-shadow: 0 4px 12px rgba(37,99,235,0.7); display: flex; align-items: center; justify-content: center; position: relative;">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                        <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/>
-                        <line x1="12" y1="18" x2="12.01" y2="18"/>
-                      </svg>
-                    </div>
-                  </div>
-                `,
-                iconSize: [50, 50],
-                iconAnchor: [25, 25],
-              });
-
-              deviceMarkerRef.current = L.marker([data.latitude, data.longitude], {
-                icon: deviceIcon,
-                zIndexOffset: 950,
-              }).bindTooltip(`📱 Ground Station (${data.city || 'Network IP'}) · ±1.2km`, {
-                direction: 'top',
-                offset: [0, -18],
-              }).addTo(map);
-            } else {
-              deviceMarkerRef.current.setLatLng([data.latitude, data.longitude]);
-            }
-          }
-          return;
-        }
-      } catch (fallbackErr) {
-        console.warn('IP fallback failed:', fallbackErr);
-      }
-
-      setDeviceGpsStatus('error');
-      setDeviceGpsError(err.message || 'Error acquiring device position.');
-    };
-
-    const watchId = navigator.geolocation.watchPosition(updatePosition, handleError, {
-      enableHighAccuracy: true,
-      timeout: 10000,
-      maximumAge: 3000,
-    });
-
-    return () => {
-      navigator.geolocation.clearWatch(watchId);
-    };
-  }, [followMode, telemetry.latitude]);
-
-  // 4. Update Drone Marker & Heading dynamically (Strictly from Pixhawk GPS)
+  // 3. Update Drone Marker & Heading dynamically (Strictly from Pixhawk GPS)
   useEffect(() => {
     const map = mapRef.current;
     const marker = droneMarkerRef.current;
@@ -759,29 +569,10 @@ export const MapPanel: React.FC<MapPanelProps> = ({
       if (breadcrumbsRef.current && (telemetry.speedMs > 0.2 || telemetry.isArmed)) {
         breadcrumbsRef.current.addLatLng([lat, lon]);
       }
-
-      // Update range vector line connecting GCS Device and Drone
-      if (droneToDeviceLineRef.current && deviceLocation) {
-        const dist = calculateHaversineDistance(deviceLocation.lat, deviceLocation.lon, lat, lon);
-        const bearing = calculateBearing(deviceLocation.lat, deviceLocation.lon, lat, lon);
-        droneToDeviceLineRef.current.setLatLngs([
-          [deviceLocation.lat, deviceLocation.lon],
-          [lat, lon],
-        ]);
-        droneToDeviceLineRef.current.bindTooltip(
-          `↔ Distance to Drone: ${dist.toFixed(1)} m · Az: ${Math.round(bearing)}°`,
-          { direction: 'center', permanent: false }
-        );
-      } else if (droneToDeviceLineRef.current) {
-        droneToDeviceLineRef.current.setLatLngs([]);
-      }
     } else {
       // GPS signal unavailable or invalid -> remove drone marker from map to prevent showing inaccurate location
       if (map.hasLayer(marker)) {
         map.removeLayer(marker);
-      }
-      if (droneToDeviceLineRef.current) {
-        droneToDeviceLineRef.current.setLatLngs([]);
       }
     }
   }, [
@@ -792,7 +583,6 @@ export const MapPanel: React.FC<MapPanelProps> = ({
     telemetry.isArmed,
     telemetry.isGpsValid,
     followMode,
-    deviceLocation,
   ]);
 
   // 5. Update Home Point Marker
@@ -1051,67 +841,18 @@ export const MapPanel: React.FC<MapPanelProps> = ({
     showTemporaryNotice('Map centered on Pixhawk Drone GPS');
   };
 
-  const handleLocateDevice = () => {
-    const map = mapRef.current;
-    if (!map) return;
-
-    if (!deviceLocation) {
-      if (deviceGpsStatus === 'denied') {
-        showTemporaryNotice('Location permission denied. Please allow browser location access.');
-      } else {
-        showTemporaryNotice('Acquiring device GPS fix... Please wait.');
-      }
-      audioService.playBeep(450, 120);
-      return;
-    }
-
-    map.flyTo([deviceLocation.lat, deviceLocation.lon], 18, { duration: 1.2 });
-    audioService.playBeep(960, 60);
-    showTemporaryNotice(`Map centered on Ground Station Device (±${deviceLocation.accuracy}m)`);
-  };
-
   const handleToggleFollow = () => {
     setFollowMode((prev) => {
-      let next: 'none' | 'drone' | 'device' = 'none';
-      if (prev === 'none') next = 'drone';
-      else if (prev === 'drone') next = 'device';
-      else next = 'none';
-
+      const next: 'none' | 'drone' = prev === 'none' ? 'drone' : 'none';
       audioService.playBeep(next === 'none' ? 550 : 880, 60);
       if (next === 'drone') {
         showTemporaryNotice('Follow Mode: Autocenter on DRONE');
         handleLocateDrone();
-      } else if (next === 'device') {
-        showTemporaryNotice('Follow Mode: Autocenter on GCS DEVICE');
-        handleLocateDevice();
       } else {
         showTemporaryNotice('Follow Mode: Disabled (Free Pan)');
       }
       return next;
     });
-  };
-
-  const handleSetHomeToDevice = async () => {
-    if (!deviceLocation) {
-      showTemporaryNotice('Cannot set Home: Device GPS not locked yet.');
-      audioService.playBeep(350, 150);
-      return;
-    }
-
-    try {
-      await missionEngine.setHomePoint(deviceLocation.lat, deviceLocation.lon);
-      const newHome = mavlinkService.getHomePoint();
-      setHomePoint(newHome);
-      audioService.playBeep(1050, 120);
-      showTemporaryNotice(`Home Point locked to Device GPS: ${deviceLocation.lat.toFixed(6)}, ${deviceLocation.lon.toFixed(6)} ✓`);
-      const map = mapRef.current;
-      if (map) {
-        updateGeofence(map, deviceLocation.lat, deviceLocation.lon);
-      }
-    } catch (e) {
-      console.error('Failed to set home to device GPS:', e);
-      showTemporaryNotice('Failed to dispatch MAV_CMD_DO_SET_HOME to Pixhawk.');
-    }
   };
 
   const handleZoomIn = () => {
@@ -1257,9 +998,6 @@ export const MapPanel: React.FC<MapPanelProps> = ({
     Math.abs(telemetry.latitude) <= 90 &&
     Math.abs(telemetry.longitude) <= 180
   );
-  const distanceDroneToDevice = (droneHasValidCoords && deviceLocation)
-    ? calculateHaversineDistance(deviceLocation.lat, deviceLocation.lon, telemetry.latitude, telemetry.longitude)
-    : null;
 
   const isAnyToolActive = isDrawingFreehand || isPlacingCircle || isPlacingConcentric || isPinningWp || isPlacingGeofence;
 
@@ -1470,58 +1208,18 @@ export const MapPanel: React.FC<MapPanelProps> = ({
             <LocateFixed className="w-3.5 h-3.5" />
           </button>
 
-          {/* Locate Ground Station Device / Mobile GPS */}
-          <button
-            type="button"
-            onClick={handleLocateDevice}
-            className={`w-7 h-7 rounded-[6px] flex items-center justify-center transition cursor-pointer ${
-              deviceLocation
-                ? 'text-amber-400 hover:bg-[#21262D] hover:text-amber-300'
-                : 'text-[var(--uav-muted)] hover:bg-[#21262D]'
-            }`}
-            title={
-              deviceLocation
-                ? `Locate Ground Station Device (Mobile/PC GPS: ±${deviceLocation.accuracy}m)`
-                : `Locate Ground Station Device (${deviceGpsStatus})`
-            }
-          >
-            <Smartphone className="w-3.5 h-3.5" />
-          </button>
-
-          {/* Follow Mode Toggle (Free -> Drone -> Device) */}
+          {/* Follow Drone Mode Toggle */}
           <button
             type="button"
             onClick={handleToggleFollow}
             className={`w-7 h-7 rounded-[6px] flex items-center justify-center transition cursor-pointer ${
               followMode === 'drone'
                 ? 'bg-emerald-600 text-white'
-                : followMode === 'device'
-                ? 'bg-amber-600 text-white'
                 : 'hover:bg-[#21262D] text-[var(--uav-muted)] hover:text-white'
             }`}
-            title={`Follow Mode: ${
-              followMode === 'drone'
-                ? 'Following Drone'
-                : followMode === 'device'
-                ? 'Following GCS Device'
-                : 'Free Pan (Click to follow)'
-            }`}
+            title={followMode === 'drone' ? 'Following Drone (Click to unfreeze)' : 'Follow Drone (Autocenter on Pixhawk GPS)'}
           >
             <Target className="w-3.5 h-3.5" />
-          </button>
-
-          {/* Set Home to Device GPS */}
-          <button
-            type="button"
-            onClick={handleSetHomeToDevice}
-            className={`w-7 h-7 rounded-[6px] flex items-center justify-center transition cursor-pointer ${
-              deviceLocation
-                ? 'hover:bg-amber-600/30 text-amber-400 hover:text-amber-300'
-                : 'text-[var(--uav-muted)] opacity-40 hover:bg-[#21262D]'
-            }`}
-            title="Set Drone Home to Ground Station Device GPS"
-          >
-            <Home className="w-3.5 h-3.5" />
           </button>
 
           <div className="w-full h-[1px] bg-[var(--uav-card-border)] my-0.5" />
@@ -1689,205 +1387,88 @@ export const MapPanel: React.FC<MapPanelProps> = ({
       <div className="absolute left-2.5 bottom-2.5 z-20 flex flex-col gap-2 pointer-events-none">
         {/* GPS Status HUD */}
         <div className="w-64 rounded-[8px] border border-[var(--uav-card-border)] bg-[#0B1424]/95 backdrop-blur-sm p-2.5 text-[11px] font-sans flex flex-col gap-1.5 shadow-xl pointer-events-auto">
-          {/* Header with Switcher between Drone and GCS Device */}
+          {/* Header */}
           <div className="flex items-center justify-between pb-1.5 border-b border-[var(--uav-card-border)]">
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => setActiveGpsTab('drone')}
-                className={`px-2 py-0.5 rounded text-[10px] font-bold transition flex items-center gap-1 ${
-                  activeGpsTab === 'drone'
-                    ? 'bg-emerald-600/30 text-emerald-300 border border-emerald-500/50'
-                    : 'text-[var(--uav-muted)] hover:text-white'
-                }`}
-              >
-                <span className={`w-1.5 h-1.5 rounded-full ${droneHasValidCoords ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-                <span>Drone FC</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveGpsTab('device')}
-                className={`px-2 py-0.5 rounded text-[10px] font-bold transition flex items-center gap-1 ${
-                  activeGpsTab === 'device'
-                    ? 'bg-[#10B981]/20 text-emerald-300 border border-emerald-500/40'
-                    : 'text-[var(--uav-muted)] hover:text-white'
-                }`}
-              >
-                <span className={`w-1.5 h-1.5 rounded-full ${deviceLocation ? 'bg-emerald-400' : 'bg-rose-400'}`} />
-                <span>Device GCS</span>
-              </button>
+            <div className="flex items-center gap-1.5">
+              <span className={`w-2 h-2 rounded-full ${droneHasValidCoords ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}`} />
+              <span className="font-semibold text-white text-[11px]">Pixhawk FC GPS</span>
             </div>
 
             <span className="font-mono text-[9px] text-[var(--uav-muted)]">
-              {followMode !== 'none' ? `FOLLOW: ${followMode.toUpperCase()}` : 'FREE'}
+              {followMode === 'drone' ? 'FOLLOWING DRONE' : 'FREE CAM'}
             </span>
           </div>
 
           {/* Drone FC View */}
-          {activeGpsTab === 'drone' && (
-            <div className="space-y-1">
-              <div className="flex items-center justify-between text-[10px]">
-                <span className="text-[var(--uav-muted)]">Fix Status:</span>
-                <span className={`font-bold ${droneHasValidCoords ? 'text-emerald-400' : 'text-rose-400'}`}>
-                  {droneHasValidCoords
-                    ? `${telemetry.gpsFixType.replace('_', ' ')} (${telemetry.satellites} Sats)`
-                    : 'Pixhawk GPS Unavailable'}
-                </span>
-              </div>
-              <div className="grid grid-cols-2 text-[10px] text-[var(--uav-muted)]">
-                <span>GPS Link</span>
-                <span className={`text-right font-mono font-medium ${telemetry.isGpsLocked ? 'text-emerald-400' : 'text-rose-400'}`}>
-                  {telemetry.isGpsLocked ? 'CONNECTED ✓' : 'NO SIGNAL ✗'}
-                </span>
-                <span>Latitude</span>
-                <span className="text-right text-[var(--uav-text)] font-mono font-medium">
-                  {droneHasValidCoords ? `${telemetry.latitude.toFixed(7)}°` : '--'}
-                </span>
-                <span>Longitude</span>
-                <span className="text-right text-[var(--uav-text)] font-mono font-medium">
-                  {droneHasValidCoords ? `${telemetry.longitude.toFixed(7)}°` : '--'}
-                </span>
-                <span>GPS MSL Alt</span>
-                <span className="text-right text-[var(--uav-text)] font-mono font-medium">
-                  {droneHasValidCoords ? `${(telemetry.gpsAltitudeMeters ?? telemetry.altitudeMeters).toFixed(1)} m` : '--'}
-                </span>
-                <span>Relative Alt</span>
-                <span className="text-right text-[var(--uav-text)] font-mono font-medium">
-                  {telemetry.altitudeMeters.toFixed(1)} m
-                </span>
-                <span>Satellites</span>
-                <span className="text-right text-[var(--uav-text)] font-mono font-medium">
-                  {telemetry.satellites} visible
-                </span>
-                <span>HDOP</span>
-                <span className="text-right text-[var(--uav-text)] font-mono font-medium">
-                  {telemetry.hdop.toFixed(2)}
-                </span>
-                <span>Last Update</span>
-                <span className="text-right text-[var(--uav-text)] font-mono font-medium">
-                  {telemetry.gpsAgeMs !== undefined
-                    ? (telemetry.gpsAgeMs < 1000 ? '<1s ago' : `${(telemetry.gpsAgeMs / 1000).toFixed(1)}s ago`)
-                    : 'Awaiting Fix'}
-                </span>
-              </div>
-
-              {/* Action row for drone */}
-              <div className="flex items-center justify-between pt-1 border-t border-[var(--uav-card-border)]/60 text-[10px]">
-                <button
-                  type="button"
-                  onClick={handleLocateDrone}
-                  disabled={!droneHasValidCoords}
-                  className="px-2 py-0.5 rounded bg-[#21262D] hover:bg-[#262C36] text-slate-200 hover:text-white disabled:opacity-40 transition cursor-pointer font-medium"
-                >
-                  Pan to Drone
-                </button>
-                {distanceDroneToDevice !== null && (
-                  <span className="text-emerald-400 font-mono text-[9px]">
-                    ↔ {distanceDroneToDevice.toFixed(1)}m from GCS
-                  </span>
-                )}
-              </div>
+          <div className="space-y-1">
+            <div className="flex items-center justify-between text-[10px]">
+              <span className="text-[var(--uav-muted)]">Fix Status:</span>
+              <span className={`font-bold ${droneHasValidCoords ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {droneHasValidCoords
+                  ? `${telemetry.gpsFixType.replace('_', ' ')} (${telemetry.satellites} Sats)`
+                  : 'Pixhawk GPS Unavailable'}
+              </span>
             </div>
-          )}
-
-          {/* GCS Device View */}
-          {activeGpsTab === 'device' && (
-            <div className="space-y-1">
-              <div className="flex items-center justify-between text-[10px]">
-                <span className="text-[var(--uav-muted)]">Device Geolocation:</span>
-                <span
-                  className={`font-bold ${
-                    deviceLocation
-                      ? 'text-sky-400'
-                      : deviceGpsStatus === 'denied'
-                      ? 'text-rose-400'
-                      : 'text-amber-400'
-                  }`}
-                >
-                  {deviceLocation
-                    ? `LOCKED (±${deviceLocation.accuracy}m)`
-                    : deviceGpsStatus === 'denied'
-                    ? 'PERMISSION OFF'
-                    : 'LOCATING...'}
-                </span>
-              </div>
-
-              {deviceLocation ? (
-                <div className="grid grid-cols-2 text-[10px] text-[var(--uav-muted)]">
-                  <span>Device Lat</span>
-                  <span className="text-right text-sky-200 font-mono font-medium">
-                    {deviceLocation.lat.toFixed(6)}°
-                  </span>
-                  <span>Device Lon</span>
-                  <span className="text-right text-sky-200 font-mono font-medium">
-                    {deviceLocation.lon.toFixed(6)}°
-                  </span>
-                  <span>Accuracy</span>
-                  <span className="text-right text-sky-200 font-mono font-medium">
-                    ±{deviceLocation.accuracy} m
-                  </span>
-                </div>
-              ) : (
-                <div className="text-[10px] text-[var(--uav-muted)] py-1 flex items-center justify-between">
-                  <span className="truncate">{deviceGpsError || 'Requesting browser GPS sensor...'}</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setDeviceGpsStatus('locating');
-                      setDeviceGpsError(null);
-                      navigator.geolocation?.getCurrentPosition(
-                        (pos) => {
-                          const { latitude, longitude, accuracy } = pos.coords;
-                          setDeviceLocation({
-                            lat: latitude,
-                            lon: longitude,
-                            accuracy: Math.round(accuracy),
-                            altitude: pos.coords.altitude,
-                            heading: pos.coords.heading,
-                            speed: pos.coords.speed,
-                            timestamp: pos.timestamp,
-                          });
-                          setDeviceGpsStatus('locked');
-                          showTemporaryNotice('Device GPS Locked ✓');
-                          mapRef.current?.flyTo([latitude, longitude], 17);
-                        },
-                        (err) => {
-                          setDeviceGpsStatus(err.code === err.PERMISSION_DENIED ? 'denied' : 'error');
-                          setDeviceGpsError(err.message);
-                        },
-                        { enableHighAccuracy: true, timeout: 8000 }
-                      );
-                    }}
-                    className="ml-1 px-1.5 py-0.5 rounded bg-[#10B981]/20 hover:bg-[#10B981]/40 text-emerald-300 text-[9px] font-semibold flex items-center gap-1 cursor-pointer shrink-0"
-                  >
-                    <RefreshCw className="w-2.5 h-2.5" />
-                    <span>Retry</span>
-                  </button>
-                </div>
-              )}
-
-              {/* Action row for GCS device */}
-              <div className="flex items-center justify-between pt-1 border-t border-[var(--uav-card-border)]/60 text-[10px] gap-1">
-                <button
-                  type="button"
-                  onClick={handleLocateDevice}
-                  disabled={!deviceLocation}
-                  className="px-2 py-0.5 rounded bg-[#10B981]/20 border border-emerald-500/40 hover:bg-[#10B981]/40 text-emerald-200 disabled:opacity-40 transition cursor-pointer font-medium shrink-0"
-                >
-                  Pan to Device
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSetHomeToDevice}
-                  disabled={!deviceLocation}
-                  className="px-2 py-0.5 rounded bg-amber-600/30 border border-amber-500/40 hover:bg-amber-600/50 text-amber-200 disabled:opacity-40 transition cursor-pointer font-medium truncate"
-                  title="Copy Device GPS coordinates as Pixhawk Home Point"
-                >
-                  Sync Home Here
-                </button>
-              </div>
+            <div className="grid grid-cols-2 text-[10px] text-[var(--uav-muted)]">
+              <span>GPS Link</span>
+              <span className={`text-right font-mono font-medium ${telemetry.isGpsLocked ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {telemetry.isGpsLocked ? 'CONNECTED ✓' : 'NO SIGNAL ✗'}
+              </span>
+              <span>Latitude</span>
+              <span className="text-right text-[var(--uav-text)] font-mono font-medium">
+                {droneHasValidCoords ? `${telemetry.latitude.toFixed(7)}°` : '--'}
+              </span>
+              <span>Longitude</span>
+              <span className="text-right text-[var(--uav-text)] font-mono font-medium">
+                {droneHasValidCoords ? `${telemetry.longitude.toFixed(7)}°` : '--'}
+              </span>
+              <span>GPS MSL Alt</span>
+              <span className="text-right text-[var(--uav-text)] font-mono font-medium">
+                {droneHasValidCoords ? `${(telemetry.gpsAltitudeMeters ?? telemetry.altitudeMeters).toFixed(1)} m` : '--'}
+              </span>
+              <span>Relative Alt</span>
+              <span className="text-right text-[var(--uav-text)] font-mono font-medium">
+                {telemetry.altitudeMeters.toFixed(1)} m
+              </span>
+              <span>Satellites</span>
+              <span className="text-right text-[var(--uav-text)] font-mono font-medium">
+                {telemetry.satellites} visible
+              </span>
+              <span>HDOP</span>
+              <span className="text-right text-[var(--uav-text)] font-mono font-medium">
+                {telemetry.hdop.toFixed(2)}
+              </span>
+              <span>Last Update</span>
+              <span className="text-right text-[var(--uav-text)] font-mono font-medium">
+                {telemetry.gpsAgeMs !== undefined
+                  ? (telemetry.gpsAgeMs < 1000 ? '<1s ago' : `${(telemetry.gpsAgeMs / 1000).toFixed(1)}s ago`)
+                  : 'Awaiting Fix'}
+              </span>
             </div>
-          )}
+
+            {/* Action row for drone */}
+            <div className="flex items-center justify-between pt-1 border-t border-[var(--uav-card-border)]/60 text-[10px]">
+              <button
+                type="button"
+                onClick={handleLocateDrone}
+                disabled={!droneHasValidCoords}
+                className="px-2 py-0.5 rounded bg-[#21262D] hover:bg-[#262C36] text-slate-200 hover:text-white disabled:opacity-40 transition cursor-pointer font-medium"
+              >
+                Pan to Drone
+              </button>
+              <button
+                type="button"
+                onClick={handleToggleFollow}
+                className={`px-2 py-0.5 rounded transition cursor-pointer font-medium ${
+                  followMode === 'drone'
+                    ? 'bg-emerald-600/30 text-emerald-300 border border-emerald-500/50'
+                    : 'bg-[#21262D] hover:bg-[#262C36] text-slate-200 hover:text-white'
+                }`}
+              >
+                {followMode === 'drone' ? 'Stop Follow' : 'Follow Drone'}
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Ruler Result or Scale Bar */}

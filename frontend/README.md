@@ -20,7 +20,7 @@ It is fully configured for deployment on **Netlify**.
 4. Netlify will automatically detect [`frontend/netlify.toml`](./netlify.toml) and configure:
    - Node 20 runtime
    - SPA client routing fallback (`/* -> /index.html 200`)
-   - HTTPS camera and geolocation permissions for QR code scanner & Leaflet drone tracking
+   - HTTPS camera permissions for QR code scanner (drone tracking strictly uses Pixhawk FC GPS)
 5. Click **Deploy site**.
 
 ### Method 2: Netlify CLI
