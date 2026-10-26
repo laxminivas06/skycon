@@ -50,4 +50,6 @@ export interface MavlinkTransport {
   
   getDiagnostics(): Promise<Record<string, any>>;
   isAvailable(): boolean;
+  isConnected(): boolean;
+  isReady(): boolean;
 }

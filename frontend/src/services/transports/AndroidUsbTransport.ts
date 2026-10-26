@@ -194,8 +194,16 @@ export class AndroidUsbTransport implements MavlinkTransport {
     });
   }
 
+  public isConnected(): boolean {
+    return this.isAvailable() && this.currentDevice !== null;
+  }
+
+  public isReady(): boolean {
+    return this.isConnected();
+  }
+
   public async send(data: Uint8Array): Promise<boolean> {
-    if (!this.isAvailable()) return false;
+    if (!this.isReady()) return false;
     try {
       let binaryString = '';
       for (let i = 0; i < data.length; i++) {
@@ -204,7 +212,8 @@ export class AndroidUsbTransport implements MavlinkTransport {
       const base64 = btoa(binaryString);
       await UsbSerial.sendData({ data: base64 });
       return true;
-    } catch (err) {
+    } catch (err: any) {
+      console.error(`[ANDROID_USB] Send error:`, err?.message || err);
       return false;
     }
   }

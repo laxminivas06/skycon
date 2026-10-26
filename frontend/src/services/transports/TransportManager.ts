@@ -107,6 +107,14 @@ export class TransportManager {
     return this.activeTransport.disconnect();
   }
 
+  public isConnected(): boolean {
+    return this.activeTransport ? this.activeTransport.isConnected() : false;
+  }
+
+  public isReady(): boolean {
+    return this.activeTransport ? this.activeTransport.isReady() : false;
+  }
+
   public async send(data: Uint8Array): Promise<boolean> {
     return this.activeTransport.send(data);
   }

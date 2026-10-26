@@ -990,17 +990,36 @@ export class Esp32WebSocketTransport implements MavlinkTransport {
     }
   }
 
+  public isConnected(): boolean {
+    return this.socket !== null && this.socket.readyState === WebSocket.OPEN && this.linkState === 'CONNECTED';
+  }
+
+  public isReady(): boolean {
+    if (!this.isConnected()) {
+      return false;
+    }
+    // For Cloud Relay (WSS), confirm the flight-controller connector / bridge is online
+    if (this.currentProtocol === 'wss' || this.connectionMode === 'SECURE') {
+      return this.connectorOnline || this.esp32Online;
+    }
+    return true;
+  }
+
   public async send(data: Uint8Array): Promise<boolean> {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+    if (!this.isReady()) {
+      const reason = !this.isConnected()
+        ? `socket state ${this.socket ? this.socket.readyState : 'NULL'} (link: ${this.linkState})`
+        : 'cloud relay connector is offline (no flight controller bridge)';
+      console.warn(`[ESP32_WEBSOCKET] Cannot transmit ${data.length} bytes: ${reason}`);
       return false;
     }
     try {
       // Zero-copy direct transmit: modern browsers accept ArrayBufferView (Uint8Array) directly without copying
-      this.socket.send(data);
+      this.socket!.send(data);
       this.cumulativeTxBytes += data.length;
       return true;
-    } catch (e) {
-      console.error('[WS TX] Failed to send MAVLink bytes over WebSocket:', e);
+    } catch (e: any) {
+      console.error(`[ESP32_WEBSOCKET] Failed to send ${data.length} bytes over WebSocket:`, e?.message || e);
       return false;
     }
   }

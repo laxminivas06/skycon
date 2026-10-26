@@ -7,12 +7,20 @@ export class UdpTransport implements MavlinkTransport {
 
   private dataListeners: Set<(chunk: Uint8Array) => void> = new Set();
   private stateListeners: Set<(event: TransportStateEvent) => void> = new Set();
-  private isConnected = false;
+  private _isConnected = false;
   private host = '0.0.0.0';
   private port = 14550;
 
   public isAvailable(): boolean {
     return true;
+  }
+
+  public isConnected(): boolean {
+    return this._isConnected;
+  }
+
+  public isReady(): boolean {
+    return this._isConnected;
   }
 
   public async connect(options?: { host?: string; port?: number }): Promise<boolean> {
@@ -24,7 +32,7 @@ export class UdpTransport implements MavlinkTransport {
       message: `Listening for UDP MAVLink packets on ${this.host}:${this.port}...`
     });
 
-    this.isConnected = true;
+    this._isConnected = true;
     this.notifyState({
       phase: 'USB_CONNECTED',
       message: `UDP socket active on port ${this.port}. Waiting for MAVLink heartbeat…`,
@@ -37,7 +45,7 @@ export class UdpTransport implements MavlinkTransport {
   }
 
   public async disconnect(): Promise<void> {
-    this.isConnected = false;
+    this._isConnected = false;
     this.notifyState({
       phase: 'DISCONNECTED',
       message: 'UDP Telemetry Disconnected'
@@ -45,7 +53,7 @@ export class UdpTransport implements MavlinkTransport {
   }
 
   public async send(_data: Uint8Array): Promise<boolean> {
-    return this.isConnected;
+    return this._isConnected;
   }
 
   public subscribeData(listener: (chunk: Uint8Array) => void): () => void {

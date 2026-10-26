@@ -122,12 +122,21 @@ export class WebUsbTransport implements MavlinkTransport {
     });
   }
 
+  public isConnected(): boolean {
+    return this.device !== null && (this.device.opened === true);
+  }
+
+  public isReady(): boolean {
+    return this.isConnected();
+  }
+
   public async send(data: Uint8Array): Promise<boolean> {
-    if (!this.device) return false;
+    if (!this.isReady()) return false;
     try {
       await this.device.transferOut(this.outEp, data);
       return true;
-    } catch (e) {
+    } catch (e: any) {
+      console.error(`[WEBUSB] Send error:`, e?.message || e);
       return false;
     }
   }

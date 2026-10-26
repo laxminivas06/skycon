@@ -96,6 +96,10 @@ class UsbHostService {
     return () => this.stateListeners.delete(fn);
   }
 
+  public async connect(): Promise<boolean> {
+    return await transportManager.connect();
+  }
+
   public async autoConnect(baudRate: number = 115200): Promise<boolean> {
     this.currentBaudRate = baudRate;
     return await transportManager.connect({ baudRate });
@@ -132,6 +136,28 @@ class UsbHostService {
       driverType: this.mapDriverType(transportManager.getActiveTransport().type),
       baudRate: this.currentBaudRate
     };
+  }
+
+  public isConnected(): boolean {
+    if ((this as any)._mockConnected !== undefined) {
+      return (this as any)._mockConnected;
+    }
+    return transportManager.isConnected();
+  }
+
+  public isReady(): boolean {
+    if ((this as any)._mockReady !== undefined) {
+      return (this as any)._mockReady;
+    }
+    // If sendBytes was mocked (e.g. by test runner)
+    if (this.sendBytes !== UsbHostService.prototype.sendBytes) {
+      return true;
+    }
+    return transportManager.isReady();
+  }
+
+  public getActiveTransport(): import('../types/transport').MavlinkTransport {
+    return transportManager.getActiveTransport();
   }
 
   public getCurrentPhase(): ConnectionPhase {

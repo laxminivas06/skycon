@@ -30,6 +30,14 @@ export class IosUsbTransport implements MavlinkTransport {
     });
   }
 
+  public isConnected(): boolean {
+    return false;
+  }
+
+  public isReady(): boolean {
+    return false;
+  }
+
   public async send(_data: Uint8Array): Promise<boolean> {
     return false;
   }

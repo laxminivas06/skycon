@@ -146,12 +146,21 @@ export class WebSerialTransport implements MavlinkTransport {
     });
   }
 
+  public isConnected(): boolean {
+    return this.port !== null && this.writer !== null;
+  }
+
+  public isReady(): boolean {
+    return this.isConnected();
+  }
+
   public async send(data: Uint8Array): Promise<boolean> {
-    if (!this.writer) return false;
+    if (!this.isReady()) return false;
     try {
       await this.writer.write(data);
       return true;
-    } catch (e) {
+    } catch (e: any) {
+      console.error(`[WEBSERIAL] Send error:`, e?.message || e);
       return false;
     }
   }
