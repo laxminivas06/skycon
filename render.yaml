@@ -11,6 +11,10 @@ services:
       - key: PORT
         value: 10000
       - key: RELAY_TOKEN
-        generateValue: true
+        value: saeindia_secret_token_2026
       - key: NODE_ENV
         value: production
+      - key: KEEP_ALIVE_URL
+        value: https://dronebackend-ppgp.onrender.com
+      - key: RENDER_EXTERNAL_URL
+        value: https://dronebackend-ppgp.onrender.com

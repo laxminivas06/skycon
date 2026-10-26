@@ -35,8 +35,8 @@ type FrameListener = (frameUrl: string | null) => void;
 type StatusListener = (status: DroneCameraStreamStatus, message: string) => void;
 
 const BROADCAST_CHANNEL_NAME = 'DRONE_CORE_CAMERA_STREAM_CHANNEL';
-const RELAY_TOKEN_DEFAULT = 'saeindia_sec_99348a7b1c0e';
-const DEFAULT_SECURE_RELAY_URL = 'wss://seasphndrone-backend.onrender.com/ws';
+const RELAY_TOKEN_DEFAULT = 'saeindia_secret_token_2026';
+const DEFAULT_SECURE_RELAY_URL = 'wss://dronebackend-ppgp.onrender.com/ws';
 
 class DroneCameraStreamService {
   private channel: BroadcastChannel | null = null;

@@ -32,11 +32,11 @@ export interface Esp32WebSocketOptions {
 
 // Environment defaults
 const isLocalhostOrigin = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
-const defaultLocalWs = isLocalhostOrigin ? `ws://${window.location.hostname}:8443/ws` : 'wss://seasphndrone-backend.onrender.com/ws';
+const defaultLocalWs = isLocalhostOrigin ? `ws://${window.location.hostname}:8443/ws` : 'wss://dronebackend-ppgp.onrender.com/ws';
 
 const ENV_ESP32_WS_URL = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_ESP32_WS_URL) || defaultLocalWs;
 const ENV_SECURE_RELAY_URL = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SECURE_RELAY_URL) || defaultLocalWs;
-const ENV_RELAY_TOKEN = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_RELAY_TOKEN) || 'saeindia_sec_99348a7b1c0e';
+const ENV_RELAY_TOKEN = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_RELAY_TOKEN) || 'saeindia_secret_token_2026';
 const ENV_WIFI_SSID = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_WIFI_SSID) || 'drone123';
 
 function parseWsEndpoint(urlStr: string) {
@@ -44,12 +44,12 @@ function parseWsEndpoint(urlStr: string) {
     const clean = urlStr.trim().replace(/^ws(s)?:\/\//i, 'http$1://');
     const parsed = new URL(clean);
     return {
-      host: parsed.hostname || (isLocalhostOrigin ? 'localhost' : 'seasphndrone-backend.onrender.com'),
+      host: parsed.hostname || (isLocalhostOrigin ? 'localhost' : 'dronebackend-ppgp.onrender.com'),
       port: parsed.port ? parseInt(parsed.port, 10) : (clean.startsWith('https://') ? 443 : (isLocalhostOrigin ? 8443 : 8080)),
       path: parsed.pathname || '/ws'
     };
   } catch (e) {
-    return { host: isLocalhostOrigin ? 'localhost' : 'seasphndrone-backend.onrender.com', port: isLocalhostOrigin ? 8443 : 443, path: '/ws' };
+    return { host: isLocalhostOrigin ? 'localhost' : 'dronebackend-ppgp.onrender.com', port: isLocalhostOrigin ? 8443 : 443, path: '/ws' };
   }
 }
 
@@ -352,7 +352,7 @@ export class Esp32WebSocketTransport implements MavlinkTransport {
     const formattedPath = this.formatPath(this.path);
 
     if (proto === 'wss') {
-      let ep = (this.secureEndpoint || ENV_SECURE_RELAY_URL || 'wss://seasphndrone-backend.onrender.com/ws').trim();
+      let ep = (this.secureEndpoint || ENV_SECURE_RELAY_URL || 'wss://dronebackend-ppgp.onrender.com/ws').trim();
       let url = ep.replace(/^ws:\/\//i, 'wss://');
       if (!url.startsWith('wss://')) {
         url = `wss://${url}`;

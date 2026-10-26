@@ -1,8 +1,8 @@
 const WebSocket = require('ws');
 
-const ws = new WebSocket('wss://seasphndrone-backend.onrender.com?token=saeindia_secret_token_2026');
+const ws = new WebSocket('wss://dronebackend-ppgp.onrender.com?token=saeindia_secret_token_2026');
 
-console.log('Connecting to wss://seasphndrone-backend.onrender.com ...');
+console.log('Connecting to wss://dronebackend-ppgp.onrender.com ...');
 
 const MAVLINK_CRC_EXTRAS = {
   0: 50,   // HEARTBEAT

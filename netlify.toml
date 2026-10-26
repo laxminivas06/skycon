@@ -8,6 +8,13 @@
   SECRETS_SCAN_OMIT_KEYS = "VITE_RELAY_TOKEN,VITE_SECURE_RELAY_URL"
   SECRETS_SCAN_OMIT_PATHS = "dist/**,frontend/dist/**,esp32-firmware/**"
 
+# Proxy /api requests to Render production backend (dronebackend-ppgp.onrender.com)
+[[redirects]]
+  from = "/api/*"
+  to = "https://dronebackend-ppgp.onrender.com/api/:splat"
+  status = 200
+  force = true
+
 # SPA client-side routing fallback
 [[redirects]]
   from = "/*"

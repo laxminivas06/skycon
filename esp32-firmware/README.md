@@ -53,7 +53,7 @@ const char* WIFI_PASSWORD = "YOUR_HOTSPOT_PASSWORD";
 ```
 
 ### Pre-Configured Cloud Relay Settings:
-- **Relay URL**: `wss://seasphndrone-backend.onrender.com/connector?token=saeindia_sec_99348a7b1c0e`
+- **Relay URL**: `wss://dronebackend-ppgp.onrender.com/connector?token=saeindia_secret_token_2026`
 - **UART Pins**: `RX = GPIO 18`, `TX = GPIO 17`
 - **Baud Rate**: `57600`
 
