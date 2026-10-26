@@ -1,7 +1,32 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Video, WifiOff, RefreshCw, Radio, Settings, X, Power, AlertTriangle, ShieldAlert } from 'lucide-react';
-import { ipCameraService, IpCameraStatus } from '../../services/ipCameraService';
-import { droneCameraStreamService, DroneCameraStreamStatus } from '../../services/droneCameraStreamService';
+import {
+  Video,
+  WifiOff,
+  RefreshCw,
+  Radio,
+  Settings,
+  X,
+  Power,
+  AlertTriangle,
+  ShieldAlert,
+  Smartphone,
+  ZoomIn,
+  ZoomOut,
+  Sparkles,
+  Focus,
+  Target,
+  CheckCircle2
+} from 'lucide-react';
+import {
+  ipCameraService,
+  IpCameraStatus,
+  IpCameraDetection
+} from '../../services/ipCameraService';
+import {
+  droneCameraStreamService,
+  DroneCameraStreamStatus
+} from '../../services/droneCameraStreamService';
+import { IpCameraConfigModal } from '../common/IpCameraConfigModal';
 
 interface LiveVideoFeedProps {
   className?: string;
@@ -18,13 +43,16 @@ export const LiveVideoFeed: React.FC<LiveVideoFeedProps> = ({
 }) => {
   const [isCameraEnabled, setIsCameraEnabled] = useState<boolean>(() => ipCameraService.isIpCameraEnabled());
   const [streamUrl, setStreamUrl] = useState<string>(() => ipCameraService.getStreamUrl());
-  const [editingUrl, setEditingUrl] = useState(false);
-  const [editValue, setEditValue] = useState(streamUrl);
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
   const [videoState, setVideoState] = useState<IpCameraStatus>(() => 
     ipCameraService.isIpCameraEnabled() ? 'CONNECTING' : 'OFF'
   );
   const [retryCount, setRetryCount] = useState(0);
+  const [zoomLevel, setZoomLevel] = useState<number>(() => ipCameraService.getZoom());
+  const [isAutoZoom, setIsAutoZoom] = useState<boolean>(() => ipCameraService.isAutoZoom());
+  const [detection, setDetection] = useState<IpCameraDetection | null>(() => ipCameraService.getLatestDetection());
   const [dismissMixedContentWarning, setDismissMixedContentWarning] = useState(false);
+
   const imgRef = useRef<HTMLImageElement | null>(null);
   const droneVideoRef = useRef<HTMLVideoElement | null>(null);
   const retryTimerRef = useRef<number | null>(null);
@@ -66,7 +94,6 @@ export const LiveVideoFeed: React.FC<LiveVideoFeedProps> = ({
   useEffect(() => {
     const unsubUrl = ipCameraService.subscribeUrl((url) => {
       setStreamUrl(url);
-      setEditValue(url);
       setRetryCount(0);
       if (ipCameraService.isIpCameraEnabled()) {
         setVideoState('CONNECTING');
@@ -88,11 +115,22 @@ export const LiveVideoFeed: React.FC<LiveVideoFeedProps> = ({
       setVideoState(st);
     });
 
+    const unsubZoom = ipCameraService.subscribeZoom((z, sweep) => {
+      setZoomLevel(z);
+      setIsAutoZoom(sweep);
+    });
+
+    const unsubDetection = ipCameraService.subscribeDetection((det) => {
+      setDetection(det);
+    });
+
     return () => {
       clearRetryTimer();
       unsubUrl();
       unsubToggle();
       unsubStatus();
+      unsubZoom();
+      unsubDetection();
     };
   }, []);
 
@@ -124,9 +162,18 @@ export const LiveVideoFeed: React.FC<LiveVideoFeedProps> = ({
     }
   }, [droneStream]);
 
-  // Only request image if camera is explicitly turned ON
-  const imgSrc = isCameraEnabled && streamUrl
-    ? `${streamUrl}${streamUrl.includes('?') ? '&' : '?'}_t=${retryCount}`
+  // Attach continuous QR scanner loop when image element is active
+  useEffect(() => {
+    if (isCameraEnabled && imgRef.current) {
+      const detach = ipCameraService.attachScanner(imgRef.current);
+      return () => detach();
+    }
+  }, [isCameraEnabled, retryCount]);
+
+  // Request stream with proxy routing if enabled
+  const effectiveUrl = ipCameraService.getEffectiveStreamUrl();
+  const imgSrc = isCameraEnabled && effectiveUrl
+    ? `${effectiveUrl}${effectiveUrl.includes('?') ? '&' : '?'}_t=${retryCount}`
     : '';
 
   const handleImgLoad = () => {
@@ -153,20 +200,6 @@ export const LiveVideoFeed: React.FC<LiveVideoFeedProps> = ({
     ipCameraService.setStatus('CONNECTING');
   };
 
-  const handleSaveUrl = () => {
-    const trimmed = editValue.trim();
-    if (trimmed) {
-      ipCameraService.setStreamUrl(trimmed);
-      setStreamUrl(trimmed);
-      setRetryCount(0);
-      if (isCameraEnabled) {
-        setVideoState('CONNECTING');
-        ipCameraService.setStatus('CONNECTING');
-      }
-    }
-    setEditingUrl(false);
-  };
-
   const isDroneLive = droneStreamStatus === 'LIVE_FEED_CONNECTED' && Boolean(droneStream || droneFrame);
 
   const stateColor =
@@ -186,7 +219,7 @@ export const LiveVideoFeed: React.FC<LiveVideoFeedProps> = ({
       : !isCameraEnabled || videoState === 'OFF'
       ? 'CAMERA: STANDBY (OFF)'
       : videoState === 'LIVE'
-      ? 'CAMERA: LIVE'
+      ? `PHONE IP CAM • ${zoomLevel.toFixed(1)}x`
       : videoState === 'CONNECTING'
       ? `CAMERA: CONNECTING (${retryCount + 1}/${MAX_AUTO_RETRIES})...`
       : 'CAMERA DISCONNECTED';
@@ -200,7 +233,7 @@ export const LiveVideoFeed: React.FC<LiveVideoFeedProps> = ({
         <div
           className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-lg border text-[10px] sm:text-[11px] font-black backdrop-blur-md shadow-md ${stateColor}`}
         >
-          {videoState === 'LIVE' ? (
+          {videoState === 'LIVE' || isDroneLive ? (
             <Radio className="w-3 h-3 animate-pulse" />
           ) : videoState === 'CONNECTING' ? (
             <RefreshCw className="w-3 h-3 animate-spin" />
@@ -241,15 +274,12 @@ export const LiveVideoFeed: React.FC<LiveVideoFeedProps> = ({
 
           <button
             type="button"
-            onClick={() => {
-              setEditValue(streamUrl);
-              setEditingUrl(true);
-            }}
+            onClick={() => setIsConfigModalOpen(true)}
             className="px-2 py-1 rounded-lg bg-slate-900/90 border border-slate-700 text-slate-300 hover:text-white text-[10px] font-bold transition cursor-pointer shadow-sm flex items-center space-x-1"
-            title="Configure IP Camera Stream URL"
+            title="Configure Phone IP Camera Stream URL & Presets"
           >
-            <Settings className="w-3 h-3" />
-            <span className="hidden xs:inline">URL</span>
+            <Settings className="w-3 h-3 text-amber-400" />
+            <span className="hidden xs:inline">IP CONFIG</span>
           </button>
 
           {onClose && (
@@ -271,7 +301,7 @@ export const LiveVideoFeed: React.FC<LiveVideoFeedProps> = ({
           <div className="flex items-start space-x-1.5">
             <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
             <div>
-              <span className="font-bold text-amber-300">HTTPS Security Notice:</span> Web browsers block raw local HTTP streams (<code className="bg-amber-900/60 px-1 py-0.5 rounded text-[9px]">http://192.168.x.x</code>) when loaded from an HTTPS cloud domain. For direct local video: open Ground Station on <code className="bg-amber-900/60 px-1 py-0.5 rounded text-[9px]">http://localhost:5173</code>, use the Android APK, or configure an HTTPS/WSS proxy.
+              <span className="font-bold text-amber-300">HTTPS Security Notice:</span> Web browsers block raw local HTTP streams when loaded from an HTTPS domain. In IP Config, keep <strong>Zero-CORS Proxy</strong> enabled to stream safely.
             </div>
           </div>
           <button
@@ -284,51 +314,9 @@ export const LiveVideoFeed: React.FC<LiveVideoFeedProps> = ({
         </div>
       )}
 
-      {/* URL editor overlay */}
-      {editingUrl && (
-        <div className="absolute inset-0 z-30 bg-slate-950/95 backdrop-blur-sm flex flex-col items-center justify-center p-4 space-y-3">
-          <div className="text-xs font-bold text-slate-200 uppercase tracking-wide">
-            IP Camera Stream URL
-          </div>
-          <div className="text-[10px] text-slate-400 text-center max-w-sm">
-            Enter IP camera stream URL (HTTP / MJPEG from phone IP Webcam or ESP32-CAM):
-            <br />
-            <span className="text-sky-300 font-mono text-[10px]">http://192.168.31.194:8080/video</span>
-          </div>
-          <input
-            autoFocus
-            type="url"
-            value={editValue}
-            onChange={(e) => setEditValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleSaveUrl();
-              if (e.key === 'Escape') setEditingUrl(false);
-            }}
-            className="w-full max-w-sm px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-slate-100 text-xs font-mono focus:outline-none focus:border-sky-500"
-            placeholder="http://192.168.31.194:8080/video"
-          />
-          <div className="flex space-x-2">
-            <button
-              type="button"
-              onClick={handleSaveUrl}
-              className="px-4 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-black uppercase cursor-pointer transition"
-            >
-              SAVE & CONNECT
-            </button>
-            <button
-              type="button"
-              onClick={() => setEditingUrl(false)}
-              className="px-4 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-black uppercase cursor-pointer transition"
-            >
-              CANCEL
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Video frame or Standby / Error Container */}
       <div className="relative flex-1 flex items-center justify-center min-h-[180px] bg-slate-950 overflow-hidden">
-        {/* Direct Drone Core Stream Display */}
+        {/* 1. Direct Drone Core Stream Display */}
         {isDroneLive && (
           <div className="w-full h-full relative flex items-center justify-center bg-black overflow-hidden">
             <video
@@ -350,47 +338,149 @@ export const LiveVideoFeed: React.FC<LiveVideoFeedProps> = ({
           </div>
         )}
 
+        {/* 2. Phone IP Camera Live Feed */}
         {!isDroneLive && imgSrc && isCameraEnabled && (
-          <img
-            ref={imgRef}
-            src={imgSrc}
-            alt="IP Camera Live Feed"
-            onLoad={handleImgLoad}
-            onError={handleImgError}
-            className={`w-full h-full object-contain sm:object-cover transition-opacity duration-200 ${
-              videoState === 'LIVE' ? 'opacity-100' : 'opacity-0'
-            }`}
-          />
-        )}
+          <div className="w-full h-full relative flex items-center justify-center overflow-hidden">
+            <img
+              ref={imgRef}
+              src={imgSrc}
+              alt="IP Camera Live Feed"
+              onLoad={handleImgLoad}
+              onError={handleImgError}
+              style={{
+                transform: `scale(${zoomLevel})`,
+                transformOrigin: 'center center',
+                transition: 'transform 0.15s ease-out'
+              }}
+              className={`w-full h-full object-contain transition-opacity duration-200 ${
+                videoState === 'LIVE' ? 'opacity-100' : 'opacity-0'
+              }`}
+            />
 
-        {/* 1. Camera OFF / Standby State */}
-        {!isDroneLive && (!isCameraEnabled || videoState === 'OFF') && (
-          <div className="flex flex-col items-center justify-center space-y-2 p-4 text-center z-10">
-            <div className="w-12 h-12 rounded-full border border-slate-800 bg-slate-900/80 flex items-center justify-center text-slate-500">
-              <Video className="w-6 h-6" />
-            </div>
-            <div>
-              <div className="text-slate-300 font-extrabold text-xs uppercase tracking-wider">
-                Optical Feed Standby
+            {/* Tactical QR Bounding Box Overlay */}
+            {detection && videoState === 'LIVE' && (
+              <div
+                className="absolute border-2 border-emerald-400 bg-emerald-500/20 rounded pointer-events-none z-20 animate-pulse shadow-[0_0_20px_rgba(52,211,153,0.9)] transition-all duration-100"
+                style={{
+                  left: `${Math.max(5, Math.min(85, (detection.boundingBox.x / 1280) * 100))}%`,
+                  top: `${Math.max(5, Math.min(85, (detection.boundingBox.y / 720) * 100))}%`,
+                  width: `${Math.max(15, Math.min(70, (detection.boundingBox.width / 1280) * 100))}%`,
+                  height: `${Math.max(15, Math.min(70, (detection.boundingBox.height / 720) * 100))}%`
+                }}
+              >
+                <div className="absolute -top-6 left-0 px-2 py-0.5 rounded bg-emerald-600 text-white font-mono text-[9px] font-black uppercase flex items-center gap-1 shadow-lg whitespace-nowrap">
+                  <Target className="w-3 h-3 animate-spin" />
+                  <span>
+                    {detection.qrResult.isValidTwoDigit
+                      ? `TARGET [${detection.qrResult.twoDigits}]`
+                      : `QR [${detection.qrResult.text.slice(0, 10)}]`}
+                  </span>
+                </div>
               </div>
-              <div className="text-slate-500 text-[10px] mt-0.5 max-w-[240px]">
-                IP Camera is turned OFF. Click below to start optical stream.
+            )}
+
+            {/* On-Screen Zoom Controls Overlay */}
+            {videoState === 'LIVE' && (
+              <div className="absolute top-10 right-2 z-20 bg-slate-950/85 backdrop-blur-md border border-slate-700/80 rounded-xl p-1 flex items-center gap-1 shadow-xl font-mono text-[10px] pointer-events-auto">
+                <button
+                  type="button"
+                  onClick={() => ipCameraService.stepZoom(-0.2)}
+                  title="Zoom Out (-0.2x)"
+                  className="w-5 h-5 rounded bg-slate-900 hover:bg-slate-800 text-white font-bold flex items-center justify-center cursor-pointer border border-slate-700 active:scale-95"
+                >
+                  <ZoomOut className="w-3 h-3" />
+                </button>
+
+                {[1.0, 2.0, 3.0, 4.0].map((z) => (
+                  <button
+                    key={z}
+                    type="button"
+                    onClick={() => ipCameraService.setZoom(z)}
+                    className={`px-1.5 py-0.5 rounded font-bold cursor-pointer transition text-[9px] ${
+                      Math.abs(zoomLevel - z) < 0.15
+                        ? 'bg-amber-600 text-white shadow'
+                        : 'bg-slate-900 text-slate-300 hover:text-white border border-slate-800'
+                    }`}
+                  >
+                    {z.toFixed(0)}x
+                  </button>
+                ))}
+
+                <button
+                  type="button"
+                  onClick={() => ipCameraService.stepZoom(0.2)}
+                  title="Zoom In (+0.2x)"
+                  className="w-5 h-5 rounded bg-slate-900 hover:bg-slate-800 text-white font-bold flex items-center justify-center cursor-pointer border border-slate-700 active:scale-95"
+                >
+                  <ZoomIn className="w-3 h-3" />
+                </button>
+
+                <div className="w-[1px] h-3.5 bg-slate-700 mx-0.5" />
+
+                <button
+                  type="button"
+                  onClick={() => ipCameraService.setAutoZoomSweeping(!isAutoZoom)}
+                  title={isAutoZoom ? 'Stop Auto-Zoom' : 'Auto-Zoom Sweep'}
+                  className={`px-1.5 py-0.5 rounded font-bold flex items-center gap-0.5 cursor-pointer transition text-[9px] ${
+                    isAutoZoom
+                      ? 'bg-emerald-600 text-white animate-pulse'
+                      : 'bg-slate-900 text-slate-300 hover:text-white border border-slate-800'
+                  }`}
+                >
+                  <Sparkles className="w-2.5 h-2.5 text-amber-300" />
+                  <span>AUTO</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => ipCameraService.triggerFocus()}
+                  title="Trigger Remote Phone Focus"
+                  className="px-1.5 py-0.5 rounded bg-slate-900 hover:bg-slate-800 text-sky-300 font-bold border border-slate-800 cursor-pointer text-[9px]"
+                >
+                  FOCUS
+                </button>
               </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => ipCameraService.setIpCameraEnabled(true)}
-              className="mt-1 px-4 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-[11px] font-black uppercase tracking-wider flex items-center space-x-1.5 transition cursor-pointer shadow-md shadow-sky-950"
-            >
-              <Power className="w-3.5 h-3.5" />
-              <span>Enable Camera Feed</span>
-            </button>
+            )}
           </div>
         )}
 
-        {/* 2. Connecting State */}
+        {/* 3. Camera OFF / Standby State */}
+        {!isDroneLive && (!isCameraEnabled || videoState === 'OFF') && (
+          <div className="flex flex-col items-center justify-center space-y-2 p-4 text-center z-10 font-mono">
+            <div className="w-12 h-12 rounded-full border border-slate-800 bg-slate-900/80 flex items-center justify-center text-amber-400">
+              <Smartphone className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="text-slate-200 font-extrabold text-xs uppercase tracking-wider">
+                PHONE IP CAMERA STANDBY
+              </div>
+              <div className="text-slate-400 text-[10px] mt-0.5 max-w-[240px]">
+                Turn on your phone IP camera stream to view live feed, zoom, and detect QR targets.
+              </div>
+            </div>
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => ipCameraService.setIpCameraEnabled(true)}
+                className="px-4 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-[11px] font-black uppercase tracking-wider flex items-center space-x-1.5 transition cursor-pointer shadow-md shadow-amber-950"
+              >
+                <Power className="w-3.5 h-3.5" />
+                <span>Connect Phone Cam</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsConfigModalOpen(true)}
+                className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-[11px] font-bold uppercase cursor-pointer transition"
+              >
+                IP Config
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 4. Connecting State */}
         {!isDroneLive && isCameraEnabled && videoState === 'CONNECTING' && (
-          <div className="flex flex-col items-center justify-center space-y-2 p-4 text-center z-10">
+          <div className="flex flex-col items-center justify-center space-y-2 p-4 text-center z-10 font-mono">
             <div className="w-10 h-10 rounded-full border border-amber-500/40 bg-amber-950/40 flex items-center justify-center">
               <RefreshCw className="w-5 h-5 text-amber-400 animate-spin" />
             </div>
@@ -408,9 +498,9 @@ export const LiveVideoFeed: React.FC<LiveVideoFeedProps> = ({
           </div>
         )}
 
-        {/* 3. Disconnected State (Auto-retries exhausted or connection failed) */}
+        {/* 5. Disconnected State */}
         {!isDroneLive && isCameraEnabled && videoState === 'DISCONNECTED' && (
-          <div className="flex flex-col items-center justify-center space-y-2 p-4 text-center z-10 max-w-xs">
+          <div className="flex flex-col items-center justify-center space-y-2 p-4 text-center z-10 max-w-xs font-mono">
             <div className="w-10 h-10 rounded-full border border-rose-500/40 bg-rose-950/40 flex items-center justify-center">
               <WifiOff className="w-5 h-5 text-rose-400" />
             </div>
@@ -421,34 +511,25 @@ export const LiveVideoFeed: React.FC<LiveVideoFeedProps> = ({
               <div className="text-slate-400 text-[10px] mt-0.5 max-w-[240px] truncate mx-auto">
                 {streamUrl}
               </div>
-              {isMixedContentRisk ? (
-                <div className="text-amber-400/90 text-[9px] mt-1 bg-amber-950/40 border border-amber-800/40 rounded p-1">
-                  HTTPS blocks insecure LAN HTTP video. Run app locally on HTTP or use native Android build.
-                </div>
-              ) : (
-                <div className="text-slate-500 text-[9px] mt-0.5">
-                  Check camera power, Wi-Fi IP address, and port 8080.
-                </div>
-              )}
+              <div className="text-slate-500 text-[9px] mt-0.5">
+                Verify phone app is running "Start server" and both devices are on the same Wi-Fi.
+              </div>
             </div>
             <div className="flex items-center space-x-2 mt-1">
               <button
                 type="button"
                 onClick={handleManualRetry}
-                className="px-3 py-1 rounded-lg bg-sky-700 hover:bg-sky-600 text-white text-[10px] font-black uppercase flex items-center space-x-1 cursor-pointer transition border border-sky-500"
+                className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-black uppercase flex items-center space-x-1 cursor-pointer transition border border-amber-500"
               >
                 <RefreshCw className="w-3 h-3" />
                 <span>Retry</span>
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setEditValue(streamUrl);
-                  setEditingUrl(true);
-                }}
+                onClick={() => setIsConfigModalOpen(true)}
                 className="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold uppercase cursor-pointer transition border border-slate-700"
               >
-                Change URL
+                Change IP
               </button>
               <button
                 type="button"
@@ -465,8 +546,8 @@ export const LiveVideoFeed: React.FC<LiveVideoFeedProps> = ({
       {/* Bottom subtle label */}
       <div className="absolute bottom-1.5 left-2 right-2 flex items-center justify-between z-10 pointer-events-none">
         <div className="bg-slate-900/80 backdrop-blur-md px-2 py-0.5 rounded border border-slate-800 text-[9px] text-slate-400 flex items-center space-x-1">
-          <Video className="w-2.5 h-2.5 text-sky-400" />
-          <span>IP CAMERA STREAM</span>
+          <Smartphone className="w-2.5 h-2.5 text-amber-400" />
+          <span>PHONE IP CAM • SCANNER ACTIVE</span>
         </div>
         {videoState === 'LIVE' && (
           <div className="bg-emerald-950/80 border border-emerald-500/40 px-1.5 py-0.5 rounded text-emerald-300 text-[9px] font-black">
@@ -474,6 +555,16 @@ export const LiveVideoFeed: React.FC<LiveVideoFeedProps> = ({
           </div>
         )}
       </div>
+
+      {/* IP Camera Configuration Modal */}
+      <IpCameraConfigModal
+        isOpen={isConfigModalOpen}
+        onClose={() => setIsConfigModalOpen(false)}
+        onConnected={() => {
+          setVideoState('CONNECTING');
+          setRetryCount(0);
+        }}
+      />
     </div>
   );
 };

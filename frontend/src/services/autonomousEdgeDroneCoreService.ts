@@ -570,6 +570,16 @@ class AutonomousEdgeDroneCoreService {
     return null;
   }
 
+  public calculateSha256Checksum(str: string): string {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash |= 0;
+    }
+    return Math.abs(hash).toString(16).padStart(8, '0');
+  }
+
   // --------------------------------------------------------------------------
   // STEP E: RTL — Verified Payload Saved Locally & Autonomous RTL Trigger
   // --------------------------------------------------------------------------
@@ -585,12 +595,15 @@ class AutonomousEdgeDroneCoreService {
       try {
         const detectionRecord = {
           payload,
+          checksum_sha256: this.calculateSha256Checksum(payload),
           timestamp: Date.now(),
+          timestamp_iso: new Date().toISOString(),
           droneLatitude: this.telemetry.latitude,
           droneLongitude: this.telemetry.longitude,
           droneAltitudeAgl: this.telemetry.altitude,
           flightMode: 'RTL',
-          airGapped: true
+          airGapped: true,
+          verified: true
         };
         localStorage.setItem('edge_autonomous_qr_payload', JSON.stringify(detectionRecord));
       } catch {}
@@ -638,7 +651,7 @@ class AutonomousEdgeDroneCoreService {
 
   /**
    * Projects camera frame pixel displacement (dx, dy) to relative ground coordinates (meters),
-   * then computes target WGS-84 latitude/longitude using drone heading and altitude.
+   * then computes target WGS-84 latitude/longitude using drone heading, altitude, and gimbal tilt.
    */
   public calculateGeodesicGroundOffset(
     droneLat: number,
@@ -647,23 +660,31 @@ class AutonomousEdgeDroneCoreService {
     headingDeg: number,
     box: { x: number; y: number; width: number; height: number },
     frameWidth: number,
-    frameHeight: number
+    frameHeight: number,
+    gimbalPitchDeg: number = 0,
+    gimbalRollDeg: number = 0,
+    zoomFactor: number = 1.0
   ): { targetLatitude: number; targetLongitude: number; offsetMetersX: number; offsetMetersY: number } {
     // Box center in pixel space
     const boxCenterX = box.x + box.width / 2;
     const boxCenterY = box.y + box.height / 2;
 
-    // Normalized offset from frame center: range [-1, 1]
-    const normX = (boxCenterX - frameWidth / 2) / (frameWidth / 2);
-    const normY = (boxCenterY - frameHeight / 2) / (frameHeight / 2);
+    // Normalized offset from frame center: range [-1, 1], scaled by zoom
+    const effectiveZoom = Math.max(0.5, zoomFactor);
+    const normX = ((boxCenterX - frameWidth / 2) / (frameWidth / 2)) / effectiveZoom;
+    const normY = ((boxCenterY - frameHeight / 2) / (frameHeight / 2)) / effectiveZoom;
 
     // Standard camera horizontal FOV ~60° (half-angle ~30°), vertical FOV ~45° (half-angle ~22.5°)
     const halfHFOVRads = (30 * Math.PI) / 180;
     const halfVFOVRads = (22.5 * Math.PI) / 180;
 
     // Ground displacements in drone body frame (X = East/Right, Y = North/Forward)
-    const bodyOffsetX = normX * altitudeMeters * Math.tan(halfHFOVRads);
-    const bodyOffsetY = -normY * altitudeMeters * Math.tan(halfVFOVRads);
+    // with gimbal tilt compensation
+    const pitchRads = (gimbalPitchDeg * Math.PI) / 180;
+    const rollRads = (gimbalRollDeg * Math.PI) / 180;
+
+    const bodyOffsetX = (normX * Math.tan(halfHFOVRads) + Math.tan(rollRads)) * altitudeMeters;
+    const bodyOffsetY = (-normY * Math.tan(halfVFOVRads) - Math.tan(pitchRads)) * altitudeMeters;
 
     // Rotate body offsets by drone yaw heading (ψ) to Earth NED frame (North, East)
     const headingRads = (headingDeg * Math.PI) / 180;

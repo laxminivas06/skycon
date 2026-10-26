@@ -43,6 +43,7 @@ function ipCamProxyPlugin(): Plugin {
               proxyRes.pipe(res);
             });
             proxyReq.on('error', (err) => {
+              if (res.headersSent) return;
               res.statusCode = 502;
               res.setHeader('Content-Type', 'application/json');
               res.setHeader('Access-Control-Allow-Origin', '*');
@@ -50,12 +51,14 @@ function ipCamProxyPlugin(): Plugin {
             });
             proxyReq.on('timeout', () => {
               proxyReq.destroy();
+              if (res.headersSent) return;
               res.statusCode = 504;
               res.setHeader('Content-Type', 'application/json');
               res.setHeader('Access-Control-Allow-Origin', '*');
               res.end(JSON.stringify({ error: 'Camera connection timed out' }));
             });
           } catch (e: any) {
+            if (res.headersSent) return;
             res.statusCode = 500;
             res.setHeader('Content-Type', 'application/json');
             res.setHeader('Access-Control-Allow-Origin', '*');

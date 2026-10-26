@@ -33,8 +33,18 @@ import {
   Radio,
   Compass,
   ZoomIn,
-  ShieldCheck
+  ZoomOut,
+  Sparkles,
+  Focus,
+  ShieldCheck,
+  Smartphone
 } from 'lucide-react';
+import {
+  ipCameraService,
+  IpCameraStatus,
+  IpCameraDetection
+} from '../../services/ipCameraService';
+import { IpCameraConfigModal } from '../common/IpCameraConfigModal';
 
 interface DroneDashboardProps {
   telemetry: DroneTelemetry;
@@ -102,6 +112,44 @@ export const DroneDashboard: React.FC<DroneDashboardProps> = ({
 
   // Active Detection Bounding Box for Live Reticle Overlay
   const [activeBoundingBox, setActiveBoundingBox] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+
+  // Phone IP Camera States
+  const [videoSource, setVideoSource] = useState<'WEBCAM' | 'PHONE_IP_CAM'>('WEBCAM');
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState<boolean>(false);
+  const [ipCamStatus, setIpCamStatus] = useState<IpCameraStatus>(() => ipCameraService.getStatus());
+  const [ipCamZoom, setIpCamZoom] = useState<number>(() => ipCameraService.getZoom());
+  const [ipCamIsSweeping, setIpCamIsSweeping] = useState<boolean>(() => ipCameraService.isAutoZoom());
+  const [ipCamDetection, setIpCamDetection] = useState<IpCameraDetection | null>(() => ipCameraService.getLatestDetection());
+  const ipCamImgRef = useRef<HTMLImageElement | null>(null);
+
+  // Subscribe to Phone IP Camera updates
+  useEffect(() => {
+    const unsubStatus = ipCameraService.subscribeStatus((st) => setIpCamStatus(st));
+    const unsubZoom = ipCameraService.subscribeZoom((z, sweep) => {
+      setIpCamZoom(z);
+      setIpCamIsSweeping(sweep);
+    });
+    const unsubDet = ipCameraService.subscribeDetection((det) => {
+      setIpCamDetection(det);
+      if (det && det.boundingBox) {
+        setActiveBoundingBox(det.boundingBox);
+      }
+    });
+
+    return () => {
+      unsubStatus();
+      unsubZoom();
+      unsubDet();
+    };
+  }, []);
+
+  // Attach continuous scanner loop to phone IP camera image when selected
+  useEffect(() => {
+    if (videoSource === 'PHONE_IP_CAM' && ipCamImgRef.current) {
+      const detach = ipCameraService.attachScanner(ipCamImgRef.current);
+      return () => detach();
+    }
+  }, [videoSource, ipCamStatus]);
 
   // 1. Camera Initialization (Continuous Scanning with Fixed Wide FOV)
   useEffect(() => {
@@ -390,11 +438,56 @@ export const DroneDashboard: React.FC<DroneDashboardProps> = ({
             </span>
           </div>
           <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono shrink-0">
-            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isCameraActive ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
+            {/* Feed Source Switcher: [WEBCAM] | [PHONE IP CAM] */}
+            <div className="flex items-center bg-slate-900/90 p-0.5 rounded-lg border border-slate-700/80 text-[10px] font-mono">
+              <button
+                type="button"
+                onClick={() => setVideoSource('WEBCAM')}
+                className={`px-2 py-0.5 rounded font-bold transition cursor-pointer ${
+                  videoSource === 'WEBCAM' ? 'bg-sky-600 text-white' : 'text-slate-400 hover:text-white'
+                }`}
+                title="Use onboard computer webcam"
+              >
+                WEBCAM
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setVideoSource('PHONE_IP_CAM');
+                  ipCameraService.setIpCameraEnabled(true);
+                }}
+                className={`px-2 py-0.5 rounded font-bold transition cursor-pointer flex items-center gap-1 ${
+                  videoSource === 'PHONE_IP_CAM' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white'
+                }`}
+                title="Connect Phone IP Camera"
+              >
+                <Smartphone className="w-2.5 h-2.5" />
+                <span>PHONE IP CAM</span>
+              </button>
+            </div>
+
+            {/* Quick IP Config Button */}
+            <button
+              type="button"
+              onClick={() => setIsConfigModalOpen(true)}
+              className="px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 hover:text-amber-300 text-[10px] font-bold transition cursor-pointer flex items-center gap-1"
+              title="Configure Phone IP Camera Settings"
+            >
+              <Settings className="w-3 h-3 text-amber-400" />
+              <span className="hidden sm:inline">IP CONFIG</span>
+            </button>
+
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+              videoSource === 'PHONE_IP_CAM'
+                ? (ipCamStatus === 'LIVE' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400')
+                : (isCameraActive ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400')
+            }`} />
             <span className="hidden md:inline">
-              {isCameraActive
-                ? (edgeProgress.state !== 'STANDBY' ? `ACTIVE • ${edgeProgress.state}` : 'STANDBY • READY')
-                : 'CAMERA OFF'}
+              {videoSource === 'PHONE_IP_CAM'
+                ? `PHONE • ${ipCamStatus} (${ipCamZoom.toFixed(1)}x)`
+                : (isCameraActive
+                  ? (edgeProgress.state !== 'STANDBY' ? `ACTIVE • ${edgeProgress.state}` : 'STANDBY • READY')
+                  : 'CAMERA OFF')}
             </span>
 
             {/* Autonomous Edge Mission Start/Abort Button */}
@@ -513,39 +606,160 @@ export const DroneDashboard: React.FC<DroneDashboardProps> = ({
         {/* Video Canvas Container (Maintains 16:9 Aspect Ratio) */}
         <div className="relative w-full flex-1 min-h-0 bg-black flex items-center justify-center overflow-hidden">
           <div className="relative w-full h-full max-w-full max-h-full aspect-video flex items-center justify-center overflow-hidden">
-            {/* Native Live Video Stream */}
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              className={`w-full h-full object-cover transition-opacity duration-300 ${
-                isCameraActive ? 'opacity-100' : 'opacity-0 absolute pointer-events-none'
-              }`}
-            />
+            {/* 1. Native Device Webcam Stream */}
+            {videoSource === 'WEBCAM' && (
+              <>
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className={`w-full h-full object-cover transition-opacity duration-300 ${
+                    isCameraActive ? 'opacity-100' : 'opacity-0 absolute pointer-events-none'
+                  }`}
+                />
 
-            {/* Camera Offline / Error State Placeholder */}
-            {!isCameraActive && (
-              <div className="p-6 text-center space-y-3 max-w-sm">
-                <div className="w-12 h-12 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400 mx-auto">
-                  <VideoOff className="w-6 h-6 text-slate-400" />
-                </div>
-                <div>
-                  <h4 className="text-sm font-bold text-slate-200 uppercase tracking-wider font-orbitron">
-                    CAMERA FEED UNAVAILABLE
-                  </h4>
-                  <p className="text-xs text-slate-400 mt-1 font-mono">
-                    {cameraErrorMessage || 'Connecting to drone-core optical sensor...'}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleRestartCamera}
-                  className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 active:bg-amber-700 text-white font-bold text-xs uppercase tracking-wider transition cursor-pointer flex items-center gap-1.5 mx-auto shadow-lg shadow-amber-600/30"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>INITIALIZE CAMERA</span>
-                </button>
+                {/* Camera Offline / Error State Placeholder */}
+                {!isCameraActive && (
+                  <div className="p-6 text-center space-y-3 max-w-sm">
+                    <div className="w-12 h-12 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400 mx-auto">
+                      <VideoOff className="w-6 h-6 text-slate-400" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-slate-200 uppercase tracking-wider font-orbitron">
+                        CAMERA FEED UNAVAILABLE
+                      </h4>
+                      <p className="text-xs text-slate-400 mt-1 font-mono">
+                        {cameraErrorMessage || 'Connecting to drone-core optical sensor...'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleRestartCamera}
+                      className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 active:bg-amber-700 text-white font-bold text-xs uppercase tracking-wider transition cursor-pointer flex items-center gap-1.5 mx-auto shadow-lg shadow-amber-600/30"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>INITIALIZE CAMERA</span>
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* 2. Phone IP Camera Stream */}
+            {videoSource === 'PHONE_IP_CAM' && (
+              <div className="w-full h-full relative flex items-center justify-center overflow-hidden">
+                <img
+                  ref={ipCamImgRef}
+                  src={ipCameraService.getEffectiveStreamUrl()}
+                  alt="Phone IP Camera Feed"
+                  onLoad={() => ipCameraService.setStatus('LIVE')}
+                  onError={() => ipCameraService.setStatus('DISCONNECTED')}
+                  style={{
+                    transform: `scale(${ipCamZoom})`,
+                    transformOrigin: 'center center',
+                    transition: 'transform 0.15s ease-out'
+                  }}
+                  className={`w-full h-full object-contain select-none transition-opacity duration-300 ${
+                    ipCamStatus === 'LIVE' ? 'opacity-100' : 'opacity-20'
+                  }`}
+                />
+
+                {/* On-Screen Zoom Controls Overlay */}
+                {ipCamStatus === 'LIVE' && (
+                  <div className="absolute top-12 right-3 z-30 bg-slate-950/85 backdrop-blur-md border border-slate-700/80 rounded-xl p-1 flex items-center gap-1 shadow-xl font-mono text-[10px] pointer-events-auto">
+                    <button
+                      type="button"
+                      onClick={() => ipCameraService.stepZoom(-0.2)}
+                      title="Zoom Out (-0.2x)"
+                      className="w-5 h-5 rounded bg-slate-900 hover:bg-slate-800 text-white font-bold flex items-center justify-center cursor-pointer border border-slate-700 active:scale-95"
+                    >
+                      <ZoomOut className="w-3 h-3" />
+                    </button>
+
+                    {[1.0, 2.0, 3.0, 4.0].map((z) => (
+                      <button
+                        key={z}
+                        type="button"
+                        onClick={() => ipCameraService.setZoom(z)}
+                        className={`px-1.5 py-0.5 rounded font-bold cursor-pointer transition text-[9px] ${
+                          Math.abs(ipCamZoom - z) < 0.15
+                            ? 'bg-amber-600 text-white shadow'
+                            : 'bg-slate-900 text-slate-300 hover:text-white border border-slate-800'
+                        }`}
+                      >
+                        {z.toFixed(0)}x
+                      </button>
+                    ))}
+
+                    <button
+                      type="button"
+                      onClick={() => ipCameraService.stepZoom(0.2)}
+                      title="Zoom In (+0.2x)"
+                      className="w-5 h-5 rounded bg-slate-900 hover:bg-slate-800 text-white font-bold flex items-center justify-center cursor-pointer border border-slate-700 active:scale-95"
+                    >
+                      <ZoomIn className="w-3 h-3" />
+                    </button>
+
+                    <div className="w-[1px] h-3.5 bg-slate-700 mx-0.5" />
+
+                    <button
+                      type="button"
+                      onClick={() => ipCameraService.setAutoZoomSweeping(!ipCamIsSweeping)}
+                      title={ipCamIsSweeping ? 'Stop Auto-Zoom' : 'Auto-Zoom Sweep'}
+                      className={`px-1.5 py-0.5 rounded font-bold flex items-center gap-0.5 cursor-pointer transition text-[9px] ${
+                        ipCamIsSweeping
+                          ? 'bg-emerald-600 text-white animate-pulse'
+                          : 'bg-slate-900 text-slate-300 hover:text-white border border-slate-800'
+                      }`}
+                    >
+                      <Sparkles className="w-2.5 h-2.5 text-amber-300" />
+                      <span>AUTO</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => ipCameraService.triggerFocus()}
+                      title="Trigger Remote Phone Focus"
+                      className="px-1.5 py-0.5 rounded bg-slate-900 hover:bg-slate-800 text-sky-300 font-bold border border-slate-800 cursor-pointer text-[9px]"
+                    >
+                      FOCUS
+                    </button>
+                  </div>
+                )}
+
+                {ipCamStatus !== 'LIVE' && (
+                  <div className="p-6 text-center space-y-3 max-w-sm absolute inset-0 z-20 bg-slate-950/85 backdrop-blur-sm flex flex-col items-center justify-center">
+                    <div className="w-12 h-12 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-amber-400 mx-auto">
+                      <Smartphone className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-slate-200 uppercase tracking-wider font-orbitron">
+                        PHONE IP CAMERA {ipCamStatus === 'CONNECTING' ? 'CONNECTING...' : 'DISCONNECTED'}
+                      </h4>
+                      <p className="text-xs text-slate-400 mt-1 font-mono">
+                        {ipCameraService.getStreamUrl()}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => ipCameraService.setIpCameraEnabled(true)}
+                        className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs uppercase tracking-wider transition cursor-pointer flex items-center gap-1.5 shadow-lg shadow-amber-600/30"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        <span>CONNECT PHONE CAM</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsConfigModalOpen(true)}
+                        className="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 font-bold text-xs uppercase tracking-wider transition cursor-pointer"
+                      >
+                        IP Config
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -719,6 +933,18 @@ export const DroneDashboard: React.FC<DroneDashboardProps> = ({
 
             <button
               type="button"
+              onClick={() => {
+                setIsSettingsOpen(false);
+                setIsConfigModalOpen(true);
+              }}
+              className="w-full py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 font-bold text-xs uppercase tracking-wider transition cursor-pointer flex items-center justify-center gap-1.5"
+            >
+              <Smartphone className="w-3.5 h-3.5" />
+              <span>Configure Phone IP Camera</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setIsSettingsOpen(false)}
               className="w-full py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs uppercase tracking-wider transition cursor-pointer"
             >
@@ -727,6 +953,15 @@ export const DroneDashboard: React.FC<DroneDashboardProps> = ({
           </div>
         </div>
       )}
+
+      {/* Phone IP Camera Configuration Modal */}
+      <IpCameraConfigModal
+        isOpen={isConfigModalOpen}
+        onClose={() => setIsConfigModalOpen(false)}
+        onConnected={() => {
+          setVideoSource('PHONE_IP_CAM');
+        }}
+      />
     </div>
   );
 };

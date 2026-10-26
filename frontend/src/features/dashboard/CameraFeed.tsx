@@ -13,7 +13,14 @@ import {
   Navigation,
   ShieldAlert,
   Radio,
-  WifiOff
+  WifiOff,
+  Smartphone,
+  Settings,
+  ZoomIn,
+  ZoomOut,
+  Sparkles,
+  Focus,
+  Power
 } from 'lucide-react';
 import { decodeQRFromImageData } from '../../services/qrDecoderService';
 import { Card } from '../../ui/Card';
@@ -24,11 +31,19 @@ import {
   DroneCameraStreamStatus
 } from '../../services/droneCameraStreamService';
 import {
+  ipCameraService,
+  IpCameraStatus,
+  CameraSourceMode,
+  IpCameraDetection,
+  IpCameraConfig
+} from '../../services/ipCameraService';
+import {
   QRDetectionRecord,
   GCSVisualStatus,
   TargetLocation
 } from '../../types/recon';
 import { DashboardTelemetryData, useDashboardTelemetry } from '../../hooks/useDashboardTelemetry';
+import { IpCameraConfigModal } from '../../components/common/IpCameraConfigModal';
 
 interface CameraFeedProps {
   className?: string;
@@ -55,11 +70,24 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ className = '', telemetr
   const [isScanning, setIsScanning] = useState(true);
   const [isRecording, setIsRecording] = useState(false);
 
+  // Source Mode: Drone Core Stream vs Phone IP Camera
+  const [sourceMode, setSourceMode] = useState<CameraSourceMode>(() => ipCameraService.getSourceMode());
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState<boolean>(false);
+
   // Direct Drone Core Camera Stream State
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(() => droneCameraStreamService.getMediaStream());
   const [liveFrame, setLiveFrame] = useState<string | null>(() => droneCameraStreamService.getLatestFrame());
   const [streamStatus, setStreamStatus] = useState<DroneCameraStreamStatus>(() => droneCameraStreamService.getCurrentStatus());
   const [hasWebRtcVideo, setHasWebRtcVideo] = useState<boolean>(false);
+
+  // Phone IP Camera State
+  const [ipCamConfig, setIpCamConfig] = useState<IpCameraConfig>(() => ipCameraService.getConfig());
+  const [ipCamEnabled, setIpCamEnabled] = useState<boolean>(() => ipCameraService.isIpCameraEnabled());
+  const [ipCamStatus, setIpCamStatus] = useState<IpCameraStatus>(() => ipCameraService.getStatus());
+  const [ipCamZoom, setIpCamZoom] = useState<number>(() => ipCameraService.getZoom());
+  const [ipCamIsSweeping, setIpCamIsSweeping] = useState<boolean>(() => ipCameraService.isAutoZoom());
+  const [ipCamDetection, setIpCamDetection] = useState<IpCameraDetection | null>(() => ipCameraService.getLatestDetection());
+  const [ipCamImgRetry, setIpCamImgRetry] = useState<number>(0);
 
   // AERORECON State & Intelligence
   const [visualStatus, setVisualStatus] = useState<GCSVisualStatus>(reconDetectionService.getVisualStatus());
@@ -74,6 +102,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ className = '', telemetr
 
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const frameImgRef = useRef<HTMLImageElement>(null);
+  const ipCamImgRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const showNotification = (msg: string) => {
@@ -105,6 +134,30 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ className = '', telemetr
     };
   }, []);
 
+  // Subscribe to IP Camera Service
+  useEffect(() => {
+    const unsubSourceMode = ipCameraService.subscribeSourceMode((mode) => setSourceMode(mode));
+    const unsubConfig = ipCameraService.subscribeConfig((cfg) => setIpCamConfig(cfg));
+    const unsubToggle = ipCameraService.subscribeToggle((en) => setIpCamEnabled(en));
+    const unsubStatus = ipCameraService.subscribeStatus((st) => setIpCamStatus(st));
+    const unsubZoom = ipCameraService.subscribeZoom((z, sweep) => {
+      setIpCamZoom(z);
+      setIpCamIsSweeping(sweep);
+    });
+    const unsubDetection = ipCameraService.subscribeDetection((det) => {
+      setIpCamDetection(det);
+    });
+
+    return () => {
+      unsubSourceMode();
+      unsubConfig();
+      unsubToggle();
+      unsubStatus();
+      unsubZoom();
+      unsubDetection();
+    };
+  }, []);
+
   // Synchronize remote MediaStream with video element
   useEffect(() => {
     const video = remoteVideoRef.current;
@@ -119,6 +172,14 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ className = '', telemetr
       }
     }
   }, [cameraStream]);
+
+  // Attach IP Camera active scanning loop to phone stream image
+  useEffect(() => {
+    if (sourceMode === 'PHONE_IP_CAM' && ipCamEnabled && ipCamImgRef.current) {
+      const detach = ipCameraService.attachScanner(ipCamImgRef.current);
+      return () => detach();
+    }
+  }, [sourceMode, ipCamEnabled, ipCamImgRetry]);
 
   // Subscribe to AERORECON Detection Service
   useEffect(() => {
@@ -144,9 +205,9 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ className = '', telemetr
     };
   }, []);
 
-  // Continuous Full-Frame Edge-to-Edge QR Detection Loop from Drone Core stream
+  // Continuous Full-Frame QR Detection Loop from Drone Core stream
   useEffect(() => {
-    if (!isScanning || streamStatus !== 'LIVE_FEED_CONNECTED') return;
+    if (sourceMode !== 'DRONE_CORE' || !isScanning || streamStatus !== 'LIVE_FEED_CONNECTED') return;
 
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -204,7 +265,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ className = '', telemetr
 
     const interval = setInterval(scanFrame, 250); // 4 Hz scan rate
     return () => clearInterval(interval);
-  }, [isScanning, streamStatus]);
+  }, [sourceMode, isScanning, streamStatus]);
 
   const handleApproachTarget = async (detectionId?: string) => {
     setIsApproaching(true);
@@ -257,7 +318,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ className = '', telemetr
     }
   };
 
-  // Required GCS Camera Status Mapping
+  // Drone Core Camera Status Mapping
   const getStreamStatusConfig = (st: DroneCameraStreamStatus) => {
     switch (st) {
       case 'LIVE_FEED_CONNECTED':
@@ -304,7 +365,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ className = '', telemetr
           pulse: false,
           dotClass: 'bg-sky-400 animate-pulse',
           icon: Camera,
-          description: 'Awaiting Drone Core camera activation. Live feed will appear automatically when camera turns ON.'
+          description: 'Awaiting Drone Core camera activation. Or connect your Phone IP Camera (IP Webcam) directly below.'
         };
     }
   };
@@ -325,28 +386,96 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ className = '', telemetr
     }
   };
 
+  const ipCamEffectiveUrl = ipCameraService.getEffectiveStreamUrl();
+  const ipCamImgSrc = ipCamEnabled && ipCamEffectiveUrl
+    ? `${ipCamEffectiveUrl}${ipCamEffectiveUrl.includes('?') ? '&' : '?'}_t=${ipCamImgRetry}`
+    : '';
+
   return (
     <Card
-      title="DRONE-CORE CAMERA INTELLIGENCE"
+      title="DRONE & OPTICAL INTELLIGENCE"
       action={
-        <div className="flex items-center gap-1.5 relative">
-          {/* Real-Time GCS Camera Link Status Pill */}
-          <div
-            className={`flex items-center gap-1.5 px-2 py-0.5 rounded-[4px] text-[10px] font-mono font-bold transition shadow-sm ${streamStatusConfig.badgeClass}`}
-            title={`Drone Core Camera: ${streamStatusConfig.label}`}
-          >
-            <span className={`w-1.5 h-1.5 rounded-full ${streamStatusConfig.dotClass}`} />
-            <span className="hidden sm:inline">{streamStatusConfig.label}</span>
+        <div className="flex items-center gap-1.5 relative flex-wrap justify-end">
+          {/* Feed Source Switcher: [DRONE] | [PHONE IP CAM] */}
+          <div className="flex items-center bg-[#111726] p-0.5 rounded-[6px] border border-slate-700/80 text-[10px] font-mono">
+            <button
+              type="button"
+              onClick={() => ipCameraService.setSourceMode('DRONE_CORE')}
+              className={`px-2 py-0.5 rounded-[4px] font-bold transition cursor-pointer flex items-center gap-1 ${
+                sourceMode === 'DRONE_CORE'
+                  ? 'bg-sky-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+              title="View direct drone-core onboard stream"
+            >
+              <Radio className="w-2.5 h-2.5" />
+              <span>DRONE</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                ipCameraService.setSourceMode('PHONE_IP_CAM');
+                if (!ipCamEnabled) ipCameraService.setIpCameraEnabled(true);
+              }}
+              className={`px-2 py-0.5 rounded-[4px] font-bold transition cursor-pointer flex items-center gap-1 ${
+                sourceMode === 'PHONE_IP_CAM'
+                  ? 'bg-amber-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+              title="Connect Phone IP Camera (IP Webcam / DroidCam)"
+            >
+              <Smartphone className="w-2.5 h-2.5" />
+              <span>PHONE IP CAM</span>
+            </button>
           </div>
 
-          {/* AERORECON 9-State Visual Status Badge */}
-          <div
-            className={`flex items-center gap-1.5 px-2 py-0.5 rounded-[4px] text-[10px] font-mono font-bold transition shadow-sm ${statusBadge.color}`}
-            title="AERORECON Visual Intelligence State"
+          {/* Quick IP Config Button */}
+          <button
+            type="button"
+            onClick={() => setIsConfigModalOpen(true)}
+            className="px-2 py-0.5 rounded-[4px] bg-[#161B22] hover:bg-slate-800 border border-slate-700 text-slate-300 hover:text-amber-300 text-[10px] font-mono font-bold transition cursor-pointer flex items-center gap-1 shadow-sm"
+            title="Configure Phone IP Camera Address & Presets"
           >
-            <StatusIcon className="w-3 h-3" />
-            <span className="hidden md:inline">{statusBadge.label}</span>
-          </div>
+            <Settings className="w-3 h-3 text-amber-400" />
+            <span className="hidden sm:inline">IP CONFIG</span>
+          </button>
+
+          {/* Real-Time Link Status Pill */}
+          {sourceMode === 'PHONE_IP_CAM' ? (
+            <div
+              className={`flex items-center gap-1.5 px-2 py-0.5 rounded-[4px] text-[10px] font-mono font-bold transition shadow-sm ${
+                ipCamStatus === 'LIVE'
+                  ? 'bg-emerald-600 text-white shadow-emerald-950/60'
+                  : ipCamStatus === 'CONNECTING'
+                  ? 'bg-amber-600 text-white animate-pulse'
+                  : !ipCamEnabled || ipCamStatus === 'OFF'
+                  ? 'bg-slate-800 text-slate-400 border border-slate-700'
+                  : 'bg-rose-700 text-white shadow-rose-950/60'
+              }`}
+              title={`Phone IP Camera: ${ipCamStatus}`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${
+                ipCamStatus === 'LIVE' ? 'bg-emerald-300 animate-pulse' : ipCamStatus === 'CONNECTING' ? 'bg-amber-300 animate-spin' : 'bg-slate-400'
+              }`} />
+              <span className="hidden sm:inline">
+                {ipCamStatus === 'LIVE'
+                  ? `PHONE CAM LIVE • ${ipCamZoom.toFixed(1)}x`
+                  : ipCamStatus === 'CONNECTING'
+                  ? 'CONNECTING TO PHONE...'
+                  : ipCamStatus === 'OFF'
+                  ? 'PHONE CAM OFF'
+                  : 'PHONE CAM OFFLINE'}
+              </span>
+            </div>
+          ) : (
+            <div
+              className={`flex items-center gap-1.5 px-2 py-0.5 rounded-[4px] text-[10px] font-mono font-bold transition shadow-sm ${streamStatusConfig.badgeClass}`}
+              title={`Drone Core Camera: ${streamStatusConfig.label}`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${streamStatusConfig.dotClass}`} />
+              <span className="hidden sm:inline">{streamStatusConfig.label}</span>
+            </div>
+          )}
 
           {/* Tab Navigation: STREAM | ARCHIVE ({n}) | TARGET */}
           <div className="flex items-center bg-[#161B22] p-0.5 rounded-[6px] border border-[var(--uav-card-border)] text-[10px] font-mono">
@@ -405,135 +534,394 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ className = '', telemetr
           ref={containerRef}
           className="flex-1 rounded-[8px] border border-[var(--uav-card-border)] bg-black overflow-hidden relative flex items-center justify-center min-h-0"
         >
-          {isFeedActive ? (
-            <div className="w-full h-full relative flex items-center justify-center bg-black overflow-hidden">
-              {/* WebRTC Video Stream Element with object-contain */}
-              <video
-                ref={remoteVideoRef}
-                autoPlay
-                playsInline
-                muted
-                className={`w-full h-full object-contain select-none ${
-                  hasWebRtcVideo ? 'block' : 'hidden'
-                }`}
-              />
+          {/* ================================================================= */}
+          {/* 1. PHONE IP CAMERA MODE */}
+          {/* ================================================================= */}
+          {sourceMode === 'PHONE_IP_CAM' ? (
+            ipCamEnabled ? (
+              <div className="w-full h-full relative flex items-center justify-center bg-black overflow-hidden">
+                {/* Live IP Camera Image Frame with Digital Zoom Transform */}
+                {ipCamImgSrc && (
+                  <img
+                    ref={ipCamImgRef}
+                    src={ipCamImgSrc}
+                    alt="Phone IP Camera Feed"
+                    onLoad={() => ipCameraService.setStatus('LIVE')}
+                    onError={() => {
+                      ipCameraService.setStatus('DISCONNECTED');
+                    }}
+                    style={{
+                      transform: `scale(${ipCamZoom})`,
+                      transformOrigin: 'center center',
+                      transition: 'transform 0.15s ease-out'
+                    }}
+                    className={`w-full h-full object-contain select-none transition-opacity duration-300 ${
+                      ipCamStatus === 'LIVE' ? 'opacity-100' : 'opacity-20'
+                    }`}
+                  />
+                )}
 
-              {/* High-Speed Frame Fallback Element with object-contain */}
-              {!hasWebRtcVideo && liveFrame && (
-                <img
-                  ref={frameImgRef}
-                  src={liveFrame}
-                  alt="Drone Core Camera Live Stream"
-                  className="w-full h-full object-contain select-none"
-                />
-              )}
-
-              {/* Tactical UAV HUD Telemetry Overlay */}
-              <div className="absolute inset-0 pointer-events-none z-10 flex flex-col justify-between p-2 select-none">
-                {/* Top OSD Bar */}
-                <div className="flex items-start justify-between">
-                  <div className="flex items-center gap-1.5 pointer-events-auto">
-                    <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-emerald-600/90 backdrop-blur-sm text-white font-mono font-bold text-[10px] tracking-wider uppercase shadow">
-                      <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
-                      <span>DRONE CORE CAM</span>
+                {/* Connecting / Disconnected Overlay */}
+                {ipCamStatus !== 'LIVE' && (
+                  <div className="absolute inset-0 z-20 bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center p-4 text-center space-y-2">
+                    <div className="w-10 h-10 rounded-full border border-amber-500/40 bg-amber-950/40 flex items-center justify-center">
+                      <RefreshCw className="w-5 h-5 text-amber-400 animate-spin" />
                     </div>
-                    <div className="px-2 py-0.5 rounded bg-black/60 border border-slate-700 text-sky-300 font-mono font-bold text-[10px]">
-                      {hasWebRtcVideo ? 'WEBRTC 30FPS' : 'LIVE FRAME RELAY'}
-                    </div>
-                  </div>
-
-                  {/* Flight Telemetry Readout */}
-                  <div className="bg-[#070D18]/85 backdrop-blur-sm border border-sky-500/40 rounded px-2.5 py-1 flex items-center gap-2.5 font-mono text-[10.5px] text-white shadow-lg pointer-events-auto">
-                    <div className="flex items-center gap-1">
-                      <span className="text-sky-400 font-bold">ALT</span>
-                      <span className="font-bold">{(telemetry.altitudeMeters || 12.0).toFixed(1)}m</span>
-                    </div>
-                    <div className="w-[1px] h-3 bg-slate-700" />
-                    <div className="flex items-center gap-1">
-                      <span className="text-amber-400 font-bold">HDG</span>
-                      <span className="font-bold">
-                        {(telemetry.headingDeg || 0).toString().padStart(3, '0')}°
-                        <span className="text-slate-300 ml-0.5 text-[9.5px] font-semibold">{getCardinal(telemetry.headingDeg || 0)}</span>
-                      </span>
-                    </div>
-                    <div className="w-[1px] h-3 bg-slate-700" />
-                    <div className="flex items-center gap-1">
-                      <span className="text-emerald-400 font-bold">G-SPD</span>
-                      <span className="font-bold">{(telemetry.speedMs || 0).toFixed(1)}m/s</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Center Tactical Crosshair */}
-                <div className="flex-1 flex items-center justify-center relative pointer-events-none">
-                  <div className="relative w-16 h-16 flex items-center justify-center opacity-40">
-                    <div className="w-4 h-[1px] bg-emerald-400 absolute left-0" />
-                    <div className="w-4 h-[1px] bg-emerald-400 absolute right-0" />
-                    <div className="h-4 w-[1px] bg-emerald-400 absolute top-0" />
-                    <div className="h-4 w-[1px] bg-emerald-400 absolute bottom-0" />
-                    <div className="w-1.5 h-1.5 border border-emerald-400 rounded-full" />
-                  </div>
-
-                  {/* Wide Detection Bounding Box Marker */}
-                  {isScanning && (
-                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                      <div className="w-44 h-44 border border-emerald-400/40 rounded-lg flex items-center justify-center relative">
-                        <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[9px] font-mono text-slate-300 bg-black/80 px-2 py-0.5 rounded border border-slate-700 whitespace-nowrap">
-                          {latestDetection
-                            ? `LAST: ${latestDetection.detectionId} [${latestDetection.status}]`
-                            : 'SEARCHING FULL FRAME (10–15m AGL)'}
-                        </span>
+                    <div>
+                      <div className="text-amber-300 font-extrabold text-xs uppercase">
+                        {ipCamStatus === 'CONNECTING' ? 'CONNECTING TO PHONE CAMERA...' : 'PHONE CAMERA DISCONNECTED'}
+                      </div>
+                      <div className="text-slate-400 text-[10px] mt-0.5 font-mono max-w-xs truncate mx-auto">
+                        {ipCamConfig.fullUrl}
+                      </div>
+                      <div className="text-slate-500 text-[9px] mt-1">
+                        Ensure phone IP Webcam app is running "Start server" on Wi-Fi.
                       </div>
                     </div>
-                  )}
-                </div>
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setIpCamImgRetry((c) => c + 1)}
+                        className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-[10px] font-bold uppercase transition cursor-pointer flex items-center gap-1"
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                        <span>Retry</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsConfigModalOpen(true)}
+                        className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-[10px] font-bold uppercase transition cursor-pointer"
+                      >
+                        Change IP / Port
+                      </button>
+                    </div>
+                  </div>
+                )}
 
-                {/* Bottom OSD Bar: Mode, Battery, Latest Detection Preview */}
-                <div className="flex items-center justify-between text-[9px] font-mono bg-[#0D1117]/85 backdrop-blur-sm border border-slate-800/80 rounded px-2.5 py-1 text-slate-300 pointer-events-auto">
-                  <div className="flex items-center gap-2">
-                    <span className="text-emerald-400 font-bold">{telemetry.flightMode}</span>
-                    <span>•</span>
-                    <span>BAT {telemetry.batteryPercent}% ({(telemetry.batteryVoltage || 0).toFixed(1)}V)</span>
-                    <span>•</span>
-                    <span>GPS: {telemetry.isGpsValid ? `${telemetry.satellites} Sats` : 'UNAVAILABLE'}</span>
+                {/* Tactical HUD Overlay for Phone IP Camera */}
+                <div className="absolute inset-0 pointer-events-none z-10 flex flex-col justify-between p-2 select-none">
+                  {/* Top Bar: Feed Label & On-Screen Zoom Controls */}
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-1.5 pointer-events-auto">
+                      <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-amber-600/90 backdrop-blur-sm text-white font-mono font-bold text-[10px] tracking-wider uppercase shadow">
+                        <Smartphone className="w-3 h-3" />
+                        <span>PHONE IP CAM</span>
+                      </div>
+                      <div className="px-2 py-0.5 rounded bg-black/60 border border-slate-700 text-amber-300 font-mono font-bold text-[10px]">
+                        {ipCamZoom.toFixed(1)}x ZOOM
+                      </div>
+                    </div>
+
+                    {/* On-Screen Tactile Zoom Controls Bar */}
+                    <div className="bg-slate-950/85 backdrop-blur-md border border-slate-700/80 rounded-xl p-1 flex items-center gap-1 shadow-xl font-mono text-[10px] pointer-events-auto">
+                      <button
+                        type="button"
+                        onClick={() => ipCameraService.stepZoom(-0.2)}
+                        title="Zoom Out (-0.2x)"
+                        className="w-5 h-5 rounded bg-slate-900 hover:bg-slate-800 text-white font-bold flex items-center justify-center cursor-pointer border border-slate-700 active:scale-95"
+                      >
+                        <ZoomOut className="w-3 h-3" />
+                      </button>
+
+                      {[1.0, 2.0, 3.0, 4.0].map((z) => (
+                        <button
+                          key={z}
+                          type="button"
+                          onClick={() => ipCameraService.setZoom(z)}
+                          className={`px-1.5 py-0.5 rounded font-bold cursor-pointer transition text-[9px] ${
+                            Math.abs(ipCamZoom - z) < 0.15
+                              ? 'bg-amber-600 text-white shadow'
+                              : 'bg-slate-900 text-slate-300 hover:text-white border border-slate-800'
+                          }`}
+                        >
+                          {z.toFixed(0)}x
+                        </button>
+                      ))}
+
+                      <button
+                        type="button"
+                        onClick={() => ipCameraService.stepZoom(0.2)}
+                        title="Zoom In (+0.2x)"
+                        className="w-5 h-5 rounded bg-slate-900 hover:bg-slate-800 text-white font-bold flex items-center justify-center cursor-pointer border border-slate-700 active:scale-95"
+                      >
+                        <ZoomIn className="w-3 h-3" />
+                      </button>
+
+                      <div className="w-[1px] h-3.5 bg-slate-700 mx-0.5" />
+
+                      <button
+                        type="button"
+                        onClick={() => ipCameraService.setAutoZoomSweeping(!ipCamIsSweeping)}
+                        title={ipCamIsSweeping ? 'Stop Auto-Zoom Sweep' : 'Auto-Zoom Search Sweep'}
+                        className={`px-1.5 py-0.5 rounded font-bold flex items-center gap-0.5 cursor-pointer transition text-[9px] ${
+                          ipCamIsSweeping
+                            ? 'bg-emerald-600 text-white animate-pulse'
+                            : 'bg-slate-900 text-slate-300 hover:text-white border border-slate-800'
+                        }`}
+                      >
+                        <Sparkles className="w-2.5 h-2.5 text-amber-300" />
+                        <span>AUTO</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          ipCameraService.triggerFocus();
+                          showNotification('Triggered optical focus on phone');
+                        }}
+                        title="Trigger Remote Phone Focus"
+                        className="px-1.5 py-0.5 rounded bg-slate-900 hover:bg-slate-800 text-sky-300 font-bold border border-slate-800 cursor-pointer text-[9px]"
+                      >
+                        FOCUS
+                      </button>
+                    </div>
                   </div>
 
-                  {latestDetection && (
-                    <button
-                      type="button"
-                      onClick={() => setSelectedPhoto(latestDetection)}
-                      className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-sky-950/80 hover:bg-sky-900 border border-sky-500/40 text-sky-300 cursor-pointer transition"
-                    >
-                      <Eye className="w-3 h-3" />
-                      <span>LATEST PHOTO</span>
-                    </button>
-                  )}
+                  {/* Center Tactical Crosshair */}
+                  <div className="flex-1 flex items-center justify-center relative pointer-events-none">
+                    <div className="relative w-16 h-16 flex items-center justify-center opacity-40">
+                      <div className="w-4 h-[1px] bg-amber-400 absolute left-0" />
+                      <div className="w-4 h-[1px] bg-amber-400 absolute right-0" />
+                      <div className="h-4 w-[1px] bg-amber-400 absolute top-0" />
+                      <div className="h-4 w-[1px] bg-amber-400 absolute bottom-0" />
+                      <div className="w-1.5 h-1.5 border border-amber-400 rounded-full" />
+                    </div>
+
+                    {/* QR Code Detection Bounding Box Overlay */}
+                    {ipCamDetection && (
+                      <div
+                        className="absolute border-2 border-emerald-400 bg-emerald-500/20 rounded pointer-events-none z-20 animate-pulse shadow-[0_0_20px_rgba(52,211,153,0.9)] transition-all duration-100"
+                        style={{
+                          left: `${Math.max(5, Math.min(85, (ipCamDetection.boundingBox.x / 1280) * 100))}%`,
+                          top: `${Math.max(5, Math.min(85, (ipCamDetection.boundingBox.y / 720) * 100))}%`,
+                          width: `${Math.max(15, Math.min(70, (ipCamDetection.boundingBox.width / 1280) * 100))}%`,
+                          height: `${Math.max(15, Math.min(70, (ipCamDetection.boundingBox.height / 720) * 100))}%`
+                        }}
+                      >
+                        <div className="absolute -top-6 left-0 px-2 py-0.5 rounded bg-emerald-600 text-white font-mono text-[9px] font-black uppercase flex items-center gap-1 shadow-lg whitespace-nowrap">
+                          <Target className="w-3 h-3 animate-spin" />
+                          <span>
+                            {ipCamDetection.qrResult.isValidTwoDigit
+                              ? `TARGET LOCKED: [${ipCamDetection.qrResult.twoDigits}]`
+                              : `QR DECODED: "${ipCamDetection.qrResult.text.slice(0, 14)}"`}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Bottom OSD Bar for Phone IP Camera */}
+                  <div className="flex items-center justify-between text-[9px] font-mono bg-[#0D1117]/85 backdrop-blur-sm border border-slate-800/80 rounded px-2.5 py-1 text-slate-300 pointer-events-auto">
+                    <div className="flex items-center gap-2">
+                      <span className="text-amber-400 font-bold">{ipCamConfig.preset}</span>
+                      <span>•</span>
+                      <span className="truncate max-w-[140px] text-slate-400">{ipCamConfig.ip}:{ipCamConfig.port}</span>
+                      <span>•</span>
+                      <span className="text-emerald-400 font-bold">SCANNER ACTIVE</span>
+                    </div>
+
+                    {ipCamDetection ? (
+                      <div className="px-2 py-0.5 rounded bg-emerald-950 border border-emerald-500/50 text-emerald-300 font-bold flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                        <span>PAYLOAD: {ipCamDetection.qrResult.text}</span>
+                      </div>
+                    ) : (
+                      <span className="text-slate-500 italic">Scanning phone feed for QR targets...</span>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
+            ) : (
+              /* Phone IP Camera Standby Screen */
+              <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-[#070D18] text-center p-6 select-none space-y-3 font-mono">
+                <div className="w-12 h-12 rounded-xl bg-amber-950/50 border border-amber-500/50 flex items-center justify-center shadow-xl">
+                  <Smartphone className="w-6 h-6 text-amber-400" />
+                </div>
+
+                <div>
+                  <h4 className="text-white text-xs font-bold uppercase tracking-wider font-orbitron">
+                    PHONE IP CAMERA STANDBY
+                  </h4>
+                  <p className="text-slate-400 text-[10px] max-w-xs mt-1">
+                    Connect your phone camera (Android IP Webcam / DroidCam) to zoom & detect QR targets.
+                  </p>
+                  <div className="text-[10px] text-amber-300/80 mt-1 font-mono">
+                    Target: {ipCamConfig.fullUrl}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => ipCameraService.setIpCameraEnabled(true)}
+                    className="px-4 py-2 bg-amber-600 hover:bg-amber-500 active:bg-amber-700 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition cursor-pointer flex items-center gap-1.5 shadow-lg shadow-amber-600/30"
+                  >
+                    <Power className="w-3.5 h-3.5" />
+                    <span>Connect Phone Cam</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsConfigModalOpen(true)}
+                    className="px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 rounded-xl text-xs font-bold uppercase tracking-wider transition cursor-pointer flex items-center gap-1.5"
+                  >
+                    <Settings className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Configure IP</span>
+                  </button>
+                </div>
+              </div>
+            )
           ) : (
-            /* Clear GCS Status Screen when camera is not actively transmitting live feed */
-            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-[#070D18] text-center p-6 select-none">
-              <div className="w-12 h-12 rounded-xl bg-[#0D1524] border border-slate-800 flex items-center justify-center mb-2.5 shadow-xl">
-                <StreamStatusIcon className={`w-6 h-6 ${streamStatusConfig.pulse ? 'text-amber-400 animate-pulse' : 'text-slate-400'}`} />
-              </div>
+            /* =============================================================== */
+            /* 2. DRONE CORE DIRECT STREAM MODE                                 */
+            /* =============================================================== */
+            isFeedActive ? (
+              <div className="w-full h-full relative flex items-center justify-center bg-black overflow-hidden">
+                {/* WebRTC Video Stream Element */}
+                <video
+                  ref={remoteVideoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className={`w-full h-full object-contain select-none ${
+                    hasWebRtcVideo ? 'block' : 'hidden'
+                  }`}
+                />
 
-              <div className="flex items-center gap-2 mb-1">
-                <span className={`w-2 h-2 rounded-full ${streamStatusConfig.dotClass}`} />
-                <span className="text-white text-[12px] font-mono font-bold tracking-wide">
-                  {streamStatusConfig.label}
-                </span>
-              </div>
+                {/* High-Speed Frame Fallback Element */}
+                {!hasWebRtcVideo && liveFrame && (
+                  <img
+                    ref={frameImgRef}
+                    src={liveFrame}
+                    alt="Drone Core Camera Live Stream"
+                    className="w-full h-full object-contain select-none"
+                  />
+                )}
 
-              <p className="text-slate-400 text-[10.5px] font-mono max-w-sm leading-relaxed mb-3">
-                {streamStatusConfig.description}
-              </p>
+                {/* Tactical UAV HUD Telemetry Overlay */}
+                <div className="absolute inset-0 pointer-events-none z-10 flex flex-col justify-between p-2 select-none">
+                  {/* Top OSD Bar */}
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-center gap-1.5 pointer-events-auto">
+                      <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-emerald-600/90 backdrop-blur-sm text-white font-mono font-bold text-[10px] tracking-wider uppercase shadow">
+                        <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                        <span>DRONE CORE CAM</span>
+                      </div>
+                      <div className="px-2 py-0.5 rounded bg-black/60 border border-slate-700 text-sky-300 font-mono font-bold text-[10px]">
+                        {hasWebRtcVideo ? 'WEBRTC 30FPS' : 'LIVE FRAME RELAY'}
+                      </div>
+                    </div>
 
-              <div className="px-3 py-1 rounded-md bg-black/50 border border-slate-800 text-[9.5px] font-mono text-slate-400 flex items-center gap-1.5">
-                <Radio className="w-3 h-3 text-emerald-400 animate-pulse" />
-                <span>DIRECT DRONE CORE CAMERA STREAM • AUTO-RECONNECT</span>
+                    {/* Flight Telemetry Readout */}
+                    <div className="bg-[#070D18]/85 backdrop-blur-sm border border-sky-500/40 rounded px-2.5 py-1 flex items-center gap-2.5 font-mono text-[10.5px] text-white shadow-lg pointer-events-auto">
+                      <div className="flex items-center gap-1">
+                        <span className="text-sky-400 font-bold">ALT</span>
+                        <span className="font-bold">{(telemetry.altitudeMeters || 12.0).toFixed(1)}m</span>
+                      </div>
+                      <div className="w-[1px] h-3 bg-slate-700" />
+                      <div className="flex items-center gap-1">
+                        <span className="text-amber-400 font-bold">HDG</span>
+                        <span className="font-bold">
+                          {(telemetry.headingDeg || 0).toString().padStart(3, '0')}°
+                          <span className="text-slate-300 ml-0.5 text-[9.5px] font-semibold">{getCardinal(telemetry.headingDeg || 0)}</span>
+                        </span>
+                      </div>
+                      <div className="w-[1px] h-3 bg-slate-700" />
+                      <div className="flex items-center gap-1">
+                        <span className="text-emerald-400 font-bold">G-SPD</span>
+                        <span className="font-bold">{(telemetry.speedMs || 0).toFixed(1)}m/s</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Center Tactical Crosshair */}
+                  <div className="flex-1 flex items-center justify-center relative pointer-events-none">
+                    <div className="relative w-16 h-16 flex items-center justify-center opacity-40">
+                      <div className="w-4 h-[1px] bg-emerald-400 absolute left-0" />
+                      <div className="w-4 h-[1px] bg-emerald-400 absolute right-0" />
+                      <div className="h-4 w-[1px] bg-emerald-400 absolute top-0" />
+                      <div className="h-4 w-[1px] bg-emerald-400 absolute bottom-0" />
+                      <div className="w-1.5 h-1.5 border border-emerald-400 rounded-full" />
+                    </div>
+
+                    {/* Wide Detection Bounding Box Marker */}
+                    {isScanning && (
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <div className="w-44 h-44 border border-emerald-400/40 rounded-lg flex items-center justify-center relative">
+                          <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[9px] font-mono text-slate-300 bg-black/80 px-2 py-0.5 rounded border border-slate-700 whitespace-nowrap">
+                            {latestDetection
+                              ? `LAST: ${latestDetection.detectionId} [${latestDetection.status}]`
+                              : 'SEARCHING FULL FRAME (10–15m AGL)'}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Bottom OSD Bar: Mode, Battery, Latest Detection Preview */}
+                  <div className="flex items-center justify-between text-[9px] font-mono bg-[#0D1117]/85 backdrop-blur-sm border border-slate-800/80 rounded px-2.5 py-1 text-slate-300 pointer-events-auto">
+                    <div className="flex items-center gap-2">
+                      <span className="text-emerald-400 font-bold">{telemetry.flightMode}</span>
+                      <span>•</span>
+                      <span>BAT {telemetry.batteryPercent}% ({(telemetry.batteryVoltage || 0).toFixed(1)}V)</span>
+                      <span>•</span>
+                      <span>GPS: {telemetry.isGpsValid ? `${telemetry.satellites} Sats` : 'UNAVAILABLE'}</span>
+                    </div>
+
+                    {latestDetection && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedPhoto(latestDetection)}
+                        className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-sky-950/80 hover:bg-sky-900 border border-sky-500/40 text-sky-300 cursor-pointer transition"
+                      >
+                        <Eye className="w-3 h-3" />
+                        <span>LATEST PHOTO</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
               </div>
-            </div>
+            ) : (
+              /* Waiting Screen with Direct Prompt to Connect Phone IP Cam */
+              <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-[#070D18] text-center p-6 select-none font-mono">
+                <div className="w-12 h-12 rounded-xl bg-[#0D1524] border border-slate-800 flex items-center justify-center mb-2.5 shadow-xl">
+                  <StreamStatusIcon className={`w-6 h-6 ${streamStatusConfig.pulse ? 'text-amber-400 animate-pulse' : 'text-slate-400'}`} />
+                </div>
+
+                <div className="flex items-center gap-2 mb-1">
+                  <span className={`w-2 h-2 rounded-full ${streamStatusConfig.dotClass}`} />
+                  <span className="text-white text-[12px] font-mono font-bold tracking-wide">
+                    {streamStatusConfig.label}
+                  </span>
+                </div>
+
+                <p className="text-slate-400 text-[10.5px] font-mono max-w-sm leading-relaxed mb-3">
+                  {streamStatusConfig.description}
+                </p>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      ipCameraService.setSourceMode('PHONE_IP_CAM');
+                      ipCameraService.setIpCameraEnabled(true);
+                    }}
+                    className="px-3.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-[11px] font-black uppercase tracking-wider flex items-center gap-1.5 cursor-pointer shadow-md shadow-amber-950 transition active:scale-95"
+                  >
+                    <Smartphone className="w-3.5 h-3.5" />
+                    <span>Connect Phone IP Camera</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsConfigModalOpen(true)}
+                    className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-[11px] font-bold uppercase cursor-pointer transition"
+                  >
+                    Configure IP
+                  </button>
+                </div>
+              </div>
+            )
           )}
         </div>
       )}
@@ -557,7 +945,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ className = '', telemetr
           {detections.length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center text-slate-500 text-[11px] font-mono p-4 text-center">
               <Camera className="w-6 h-6 mb-1 text-slate-600" />
-              <span>No QR detections captured yet. Monitoring search area at 10–15m altitude.</span>
+              <span>No QR detections captured yet. Monitoring search area for QR codes.</span>
             </div>
           ) : (
             detections.map((rec) => (
@@ -849,6 +1237,17 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ className = '', telemetr
           </div>
         </div>
       )}
+
+      {/* Phone IP Camera Configuration Modal */}
+      <IpCameraConfigModal
+        isOpen={isConfigModalOpen}
+        onClose={() => setIsConfigModalOpen(false)}
+        onConnected={() => {
+          showNotification('Phone IP Camera connected');
+        }}
+      />
     </Card>
   );
 };
+
+export default CameraFeed;
