@@ -149,6 +149,10 @@ class VisionService {
     return this.stream;
   }
 
+  public getVideoElement(): HTMLVideoElement | null {
+    return this.videoElement;
+  }
+
   public isCameraRunning(): boolean {
     return Boolean(this.stream && this.isScanning && this.stream.active && this.stream.getVideoTracks().some(t => t.readyState === 'live'));
   }

@@ -79,6 +79,15 @@ class ReconDetectionService {
   private telemetryUnsubscribe: (() => void) | null = null;
   private isApproachingTarget: boolean = false;
   private isRtlInitiated: boolean = false;
+  private isAirGapped: boolean = true; // Air-gapped onboard edge core: Zero ground broadcasting
+
+  public setAirGapped(enabled: boolean) {
+    this.isAirGapped = enabled;
+  }
+
+  public isAirGappedMode(): boolean {
+    return this.isAirGapped;
+  }
 
   constructor() {
     this.restorePersistedDetections();
@@ -624,7 +633,7 @@ class ReconDetectionService {
   // --- STREAMING & RELAY ---
 
   private streamRecordToRelay(record: QRDetectionRecord) {
-    if (typeof window === 'undefined') return;
+    if (typeof window === 'undefined' || this.isAirGapped) return; // Zero ground broadcasting
 
     // Send via REST endpoint if available
     try {

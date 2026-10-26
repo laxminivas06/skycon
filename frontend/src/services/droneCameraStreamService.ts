@@ -179,7 +179,25 @@ class DroneCameraStreamService {
     }, 2500);
   }
 
+  private isAirGapped: boolean = true; // Default: Air-gapped onboard edge core with zero ground broadcasting
+
+  public setAirGapped(enabled: boolean) {
+    this.isAirGapped = enabled;
+    if (enabled && this.isPublishing) {
+      this.stopPublishing();
+    }
+  }
+
+  public getAirGapped(): boolean {
+    return this.isAirGapped;
+  }
+
   private sendPayload(payload: CameraStreamPayload) {
+    // Air-Gapped: Strictly block outbound telemetry & video broadcasting from Drone
+    if (this.isAirGapped && payload.senderRole === 'DRONE') {
+      return;
+    }
+
     const raw = JSON.stringify(payload);
     // 1. Broadcast locally (same origin tabs/windows)
     if (this.channel) {
@@ -201,6 +219,11 @@ class DroneCameraStreamService {
   // ==========================================================================
 
   public startPublishing(stream: MediaStream | null, videoElement: HTMLVideoElement | null) {
+    if (this.isAirGapped) {
+      console.log('[CAMERA STREAM] Air-Gapped Mode: Drone Core ground broadcasting disabled.');
+      return;
+    }
+
     this.isPublishing = true;
     this.activeStream = stream;
     this.activeVideoElement = videoElement;

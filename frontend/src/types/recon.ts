@@ -25,6 +25,17 @@ export type GCSVisualStatus =
   | 'COMMUNICATION_LOST';
 
 /**
+ * Autonomous Edge-Only Drone Core State Machine
+ */
+export type EdgeDroneCoreState =
+  | 'STANDBY'
+  | 'SEARCHING'
+  | 'TARGET_DETECTED'
+  | 'APPROACHING'
+  | 'DECODING'
+  | 'RTL';
+
+/**
  * Drone Core Compact Status Indicator States (Specification 4.B)
  */
 export type DroneCoreQRStatus =

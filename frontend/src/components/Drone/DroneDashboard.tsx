@@ -11,6 +11,10 @@ import {
 } from '../../types/recon';
 import { droneCameraStreamService } from '../../services/droneCameraStreamService';
 import {
+  autonomousEdgeDroneCoreService,
+  EdgeMissionProgress
+} from '../../services/autonomousEdgeDroneCoreService';
+import {
   Camera,
   Target,
   CheckCircle2,
@@ -23,7 +27,13 @@ import {
   Maximize,
   Minimize,
   X,
-  Power
+  Power,
+  Play,
+  Square,
+  Radio,
+  Compass,
+  ZoomIn,
+  ShieldCheck
 } from 'lucide-react';
 
 interface DroneDashboardProps {
@@ -83,6 +93,9 @@ export const DroneDashboard: React.FC<DroneDashboardProps> = ({
   const [coreStatus, setCoreStatus] = useState<DroneCoreQRStatus>(reconDetectionService.getDroneCoreStatus());
   const [latestDetection, setLatestDetection] = useState<QRDetectionRecord | null>(reconDetectionService.getLatestDetection());
 
+  // Autonomous Edge Drone Core State (Strictly Air-Gapped Onboard System)
+  const [edgeProgress, setEdgeProgress] = useState<EdgeMissionProgress>(autonomousEdgeDroneCoreService.getProgress());
+
   // Camera Hardware State
   const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
   const [cameraErrorMessage, setCameraErrorMessage] = useState<string | null>(null);
@@ -108,11 +121,10 @@ export const DroneDashboard: React.FC<DroneDashboardProps> = ({
           if (success) {
             reconDetectionService.setDroneCoreStatus('SEARCHING FOR QR');
             setCameraErrorMessage(null);
-            droneCameraStreamService.startPublishing(visionService.getStream(), videoRef.current);
+            // Air-Gapped Drone Core: Zero video or telemetry broadcasting to GCS
           } else {
             reconDetectionService.setDroneCoreStatus('CAMERA ERROR');
             setCameraErrorMessage('Camera unavailable or permission denied. Check camera access.');
-            droneCameraStreamService.stopPublishing();
           }
         }
       } catch (err: any) {
@@ -120,7 +132,6 @@ export const DroneDashboard: React.FC<DroneDashboardProps> = ({
           setIsCameraActive(false);
           reconDetectionService.setDroneCoreStatus('CAMERA ERROR');
           setCameraErrorMessage(err?.message || 'Failed to start camera');
-          droneCameraStreamService.stopPublishing();
         }
       }
     };
@@ -133,9 +144,6 @@ export const DroneDashboard: React.FC<DroneDashboardProps> = ({
         if (state.error) {
           setCameraErrorMessage(state.error);
           reconDetectionService.setDroneCoreStatus('CAMERA ERROR');
-          droneCameraStreamService.stopPublishing();
-        } else if (state.isActive) {
-          droneCameraStreamService.startPublishing(visionService.getStream(), videoRef.current);
         }
       }
     });
@@ -143,11 +151,23 @@ export const DroneDashboard: React.FC<DroneDashboardProps> = ({
     return () => {
       isMounted = false;
       unsubCamera();
-      droneCameraStreamService.stopPublishing();
     };
   }, []);
 
-  // 2. Subscribe to Recon Detection Service & RTL updates
+  // 2. Subscribe to Edge Drone Core State Machine
+  useEffect(() => {
+    const unsubEdge = autonomousEdgeDroneCoreService.subscribeState((progress) => {
+      setEdgeProgress(progress);
+      if (progress.lockedTarget && progress.lockedTarget.boundingBox) {
+        setActiveBoundingBox(progress.lockedTarget.boundingBox);
+      }
+    });
+    return () => {
+      unsubEdge();
+    };
+  }, []);
+
+  // 3. Subscribe to Recon Detection Service & RTL updates
   useEffect(() => {
     const unsubStatus = reconDetectionService.subscribeDroneCoreStatus((status) => {
       setCoreStatus(status);
@@ -176,7 +196,7 @@ export const DroneDashboard: React.FC<DroneDashboardProps> = ({
     };
   }, []);
 
-  // 3. Forward QR detection events to parent if required
+  // 4. Forward QR detection events to parent if required
   useEffect(() => {
     if (decodedQR && onQRDetected) {
       onQRDetected(decodedQR);
@@ -186,8 +206,10 @@ export const DroneDashboard: React.FC<DroneDashboardProps> = ({
   // Toggle Drone Core Camera Power
   const handleToggleCamera = async () => {
     if (isCameraActive) {
+      if (edgeProgress.state !== 'STANDBY') {
+        autonomousEdgeDroneCoreService.stopMission();
+      }
       visionService.stopCamera();
-      droneCameraStreamService.stopPublishing();
       setIsCameraActive(false);
       reconDetectionService.setDroneCoreStatus('CAMERA READY');
     } else {
@@ -196,12 +218,9 @@ export const DroneDashboard: React.FC<DroneDashboardProps> = ({
       if (videoRef.current) {
         const success = await visionService.startCamera(videoRef.current);
         setIsCameraActive(success);
-        if (success) {
-          droneCameraStreamService.startPublishing(visionService.getStream(), videoRef.current);
-        } else {
+        if (!success) {
           reconDetectionService.setDroneCoreStatus('CAMERA ERROR');
           setCameraErrorMessage('Camera unavailable or permission denied. Check camera access.');
-          droneCameraStreamService.stopPublishing();
         }
       }
     }
@@ -214,11 +233,23 @@ export const DroneDashboard: React.FC<DroneDashboardProps> = ({
     if (videoRef.current) {
       const success = await visionService.startCamera(videoRef.current);
       setIsCameraActive(success);
-      if (success) {
-        droneCameraStreamService.startPublishing(visionService.getStream(), videoRef.current);
+    }
+  };
+
+  // Start / Abort Autonomous Edge Scan
+  const handleToggleEdgeMission = async () => {
+    if (edgeProgress.state === 'STANDBY') {
+      if (!isCameraActive && videoRef.current) {
+        const started = await visionService.startCamera(videoRef.current);
+        setIsCameraActive(started);
+        if (started) {
+          await autonomousEdgeDroneCoreService.startMission(videoRef.current);
+        }
       } else {
-        droneCameraStreamService.stopPublishing();
+        await autonomousEdgeDroneCoreService.startMission(videoRef.current);
       }
+    } else {
+      autonomousEdgeDroneCoreService.stopMission();
     }
   };
 
@@ -350,20 +381,51 @@ export const DroneDashboard: React.FC<DroneDashboardProps> = ({
           <div className="flex items-center gap-2 min-w-0">
             <Camera className="w-3.5 h-3.5 text-amber-400 shrink-0" />
             <span className="font-bold text-slate-200 uppercase tracking-wider text-[11px] truncate">
-              DRONE-CORE OPTICAL SENSOR
+              AIR-GAPPED DRONE CORE
             </span>
             <span className="text-[10px] text-slate-500 hidden sm:inline">•</span>
-            <span className="text-[10px] text-slate-400 hidden sm:inline">WIDE FIELD OF VIEW (1.0x)</span>
+            <span className="text-[10px] text-emerald-400 font-bold hidden sm:inline flex items-center gap-1">
+              <ShieldCheck className="w-3 h-3 inline" />
+              EDGE ONLY
+            </span>
           </div>
           <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono shrink-0">
             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isCameraActive ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
-            <span className="hidden md:inline">{isCameraActive ? 'LIVE • STREAMING TO GCS' : 'CAMERA OFF'}</span>
+            <span className="hidden md:inline">
+              {isCameraActive
+                ? (edgeProgress.state !== 'STANDBY' ? `ACTIVE • ${edgeProgress.state}` : 'STANDBY • READY')
+                : 'CAMERA OFF'}
+            </span>
 
-            {/* Camera Power Toggle (Start/Stop capture & stream to GCS) */}
+            {/* Autonomous Edge Mission Start/Abort Button */}
+            <button
+              type="button"
+              onClick={handleToggleEdgeMission}
+              title={edgeProgress.state === 'STANDBY' ? 'Start Autonomous Onboard Mission (Air-Gapped 360° Scan)' : 'Abort Autonomous Mission'}
+              className={`px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold uppercase tracking-wider flex items-center gap-1.5 transition cursor-pointer shadow-md active:scale-95 shrink-0 ${
+                edgeProgress.state === 'STANDBY'
+                  ? 'bg-sky-600 hover:bg-sky-500 text-white shadow-sky-950/60 ring-1 ring-sky-400/50'
+                  : 'bg-amber-600 hover:bg-amber-500 text-white shadow-amber-950/60 ring-1 ring-amber-400/50 animate-pulse'
+              }`}
+            >
+              {edgeProgress.state === 'STANDBY' ? (
+                <>
+                  <Play className="w-3.5 h-3.5 shrink-0" />
+                  <span>START AUTO SCAN</span>
+                </>
+              ) : (
+                <>
+                  <Square className="w-3.5 h-3.5 shrink-0" />
+                  <span>ABORT SCAN</span>
+                </>
+              )}
+            </button>
+
+            {/* Camera Power Toggle (Start/Stop local camera hardware) */}
             <button
               type="button"
               onClick={handleToggleCamera}
-              title={isCameraActive ? 'Turn Camera Off (Stop streaming to GCS)' : 'Turn Camera On (Start streaming to GCS)'}
+              title={isCameraActive ? 'Turn Camera Off' : 'Turn Camera On'}
               className={`px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold uppercase tracking-wider flex items-center gap-1.5 transition cursor-pointer shadow-md active:scale-95 shrink-0 ${
                 isCameraActive
                   ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-950/60 ring-1 ring-rose-400/50'
@@ -401,6 +463,52 @@ export const DroneDashboard: React.FC<DroneDashboardProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Autonomous Edge Mission State Tracker Strip (Air-Gapped Workflow) */}
+        {edgeProgress.state !== 'STANDBY' && (
+          <div className="px-3 py-1.5 bg-[#0b1324] border-b border-sky-900/60 flex flex-wrap items-center justify-between text-[10px] font-mono gap-2 shrink-0">
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-400 font-bold uppercase tracking-wide">MISSION:</span>
+              <span className={`px-2 py-0.5 rounded font-black tracking-wider text-[10px] uppercase shadow-sm ${
+                edgeProgress.state === 'SEARCHING'
+                  ? 'bg-sky-900/80 text-sky-200 border border-sky-500 animate-pulse'
+                  : edgeProgress.state === 'TARGET_DETECTED'
+                  ? 'bg-amber-900/80 text-amber-200 border border-amber-500 animate-pulse'
+                  : edgeProgress.state === 'APPROACHING'
+                  ? 'bg-indigo-900/80 text-indigo-200 border border-indigo-500'
+                  : edgeProgress.state === 'DECODING'
+                  ? 'bg-purple-900/80 text-purple-200 border border-purple-500 animate-pulse'
+                  : 'bg-emerald-900/80 text-emerald-200 border border-emerald-500'
+              }`}>
+                {edgeProgress.state}
+              </span>
+              <span className="text-slate-500 hidden sm:inline">•</span>
+              <span className="text-slate-300 truncate max-w-xs md:max-w-md hidden sm:inline">
+                {edgeProgress.statusMessage}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2.5">
+              <span className="text-amber-400 font-bold flex items-center gap-1">
+                <ZoomIn className="w-3 h-3" />
+                {edgeProgress.currentZoomFactor.toFixed(1)}x ZOOM
+              </span>
+              <span className="text-slate-600">•</span>
+              <span className="text-sky-300 font-bold flex items-center gap-1">
+                <Compass className="w-3 h-3" />
+                {edgeProgress.currentYawDegrees.toFixed(0)}° YAW
+              </span>
+              {edgeProgress.distanceToTargetMeters !== null && (
+                <>
+                  <span className="text-slate-600">•</span>
+                  <span className="text-emerald-400 font-bold">
+                    DIST: {edgeProgress.distanceToTargetMeters.toFixed(1)}m
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Video Canvas Container (Maintains 16:9 Aspect Ratio) */}
         <div className="relative w-full flex-1 min-h-0 bg-black flex items-center justify-center overflow-hidden">
@@ -455,11 +563,13 @@ export const DroneDashboard: React.FC<DroneDashboardProps> = ({
                 </span>
               </div>
 
-              {/* FOV & Zoom Lock Indicator */}
+              {/* FOV & Dynamic Zoom Indicator */}
               <div className="px-2.5 py-1 rounded-lg bg-black/75 border border-slate-800 text-[10px] font-mono text-slate-300 backdrop-blur-sm hidden sm:flex items-center gap-1.5 shadow-md">
-                <span className="text-amber-400 font-bold">1.0x FIXED</span>
+                <span className="text-amber-400 font-bold">{edgeProgress.currentZoomFactor.toFixed(1)}x DYNAMIC</span>
                 <span className="text-slate-600">•</span>
-                <span>NORMAL FOV</span>
+                <span>YAW {edgeProgress.currentYawDegrees.toFixed(0)}°</span>
+                <span className="text-slate-600">•</span>
+                <span className="text-emerald-400 font-bold">AIR-GAPPED</span>
               </div>
             </div>
 
@@ -491,7 +601,7 @@ export const DroneDashboard: React.FC<DroneDashboardProps> = ({
                 }}
               >
                 <span className="absolute -top-5 left-0 px-1.5 py-0.5 rounded bg-emerald-600 text-white font-mono text-[9px] font-bold">
-                  QR TARGET
+                  TARGET LOCK
                 </span>
               </div>
             )}
@@ -530,10 +640,10 @@ export const DroneDashboard: React.FC<DroneDashboardProps> = ({
           </div>
         </div>
 
-        {/* Automatic RTL Notification Banner (Triggered automatically upon QR receipt) */}
-        {latestDetection && latestDetection.rtlInitiated && (
+        {/* Automatic RTL Notification Banner (Triggered automatically upon verified QR receipt) */}
+        {(edgeProgress.state === 'RTL' || (latestDetection && latestDetection.rtlInitiated)) && (
           <div className={`shrink-0 p-3 border-t flex items-center justify-between shadow-2xl transition-all ${
-            isRtlExecuting
+            isRtlExecuting || edgeProgress.state === 'RTL'
               ? 'bg-rose-950/95 border-rose-500 text-rose-100 shadow-rose-950/60'
               : 'bg-red-950/90 border-red-500 text-red-100 shadow-red-950/40'
           }`}>
@@ -544,16 +654,18 @@ export const DroneDashboard: React.FC<DroneDashboardProps> = ({
               <div>
                 <div className="flex items-center gap-2">
                   <span className="font-orbitron font-extrabold text-xs uppercase tracking-wide text-white">
-                    {isRtlExecuting ? 'RETURNING TO LAUNCH (RTL ACTIVE)' : 'AUTOMATIC RTL INITIATED'}
+                    {edgeProgress.state === 'RTL' ? 'MISSION COMPLETE • AUTONOMOUS RETURN TO LAUNCH' : (isRtlExecuting ? 'RETURNING TO LAUNCH (RTL ACTIVE)' : 'AUTOMATIC RTL INITIATED')}
                   </span>
                   <span className="px-2 py-0.5 rounded bg-rose-900 border border-rose-400 text-rose-200 text-[9px] font-mono font-bold">
-                    QR TRIGGERED
+                    AIR-GAPPED RTL
                   </span>
                 </div>
                 <p className="text-[10px] text-rose-200/90 font-mono">
-                  {isRtlExecuting
-                    ? `Pixhawk confirmed RTL flight mode. Cruising back to Home Reference at ${telemetry.altitude.toFixed(1)}m.`
-                    : 'QR payload verified. Pixhawk Return-To-Launch triggered automatically. Autonomous search halted.'}
+                  {edgeProgress.decodedPayload
+                    ? `Verified QR Payload: "${edgeProgress.decodedPayload}" stored securely in local memory. Pixhawk confirmed RTL navigation.`
+                    : (isRtlExecuting
+                      ? `Pixhawk confirmed RTL flight mode. Cruising back to Home Reference at ${telemetry.altitude.toFixed(1)}m.`
+                      : 'QR payload verified. Pixhawk Return-To-Launch triggered automatically. Autonomous search halted.')}
                 </p>
               </div>
             </div>
