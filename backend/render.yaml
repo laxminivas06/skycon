@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: saeindia-relay-server
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: RELAY_TOKEN
+        generateValue: true

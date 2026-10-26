@@ -1,0 +1,13 @@
+{
+  "appId": "org.saeindia.dronerescue",
+  "appName": "SAE Drone Rescue",
+  "webDir": "frontend/dist",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": true,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": true
+  }
+}

@@ -1,0 +1,52 @@
+# Dependencies
+node_modules/
+*/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Production build outputs
+dist/
+build/
+out/
+*/dist/
+*/build/
+
+# Android & Mobile built binaries
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+.gradle/
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties
+android/captures/
+android/.externalNativeBuild
+android/.cxx/
+
+# Environment files & Secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# IDE & Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.iml
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

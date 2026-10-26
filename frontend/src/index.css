@@ -1,0 +1,343 @@
+@import './styles/tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html.light,
+html:not(.dark) {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #06090e;
+  color: #f1f5f9;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+  overflow-x: hidden;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* Light Mode Core Surface Styles */
+html:not(.dark) body {
+  background-color: #f1f5f9;
+  color: #0f172a;
+}
+
+html:not(.dark) .bg-sae-dark {
+  background-color: #f1f5f9 !important;
+}
+
+/* Light mode panels & cards */
+html:not(.dark) .bg-slate-900,
+html:not(.dark) .bg-slate-900\/95,
+html:not(.dark) .bg-slate-900\/90,
+html:not(.dark) .bg-slate-900\/80,
+html:not(.dark) .bg-slate-900\/70,
+html:not(.dark) .bg-slate-900\/60 {
+  background-color: #ffffff !important;
+  box-shadow: 0 1px 3px 0 rgba(15, 23, 42, 0.08), 0 1px 2px -1px rgba(15, 23, 42, 0.08);
+}
+
+html:not(.dark) .bg-slate-950,
+html:not(.dark) .bg-slate-950\/95,
+html:not(.dark) .bg-slate-950\/90,
+html:not(.dark) .bg-slate-950\/80,
+html:not(.dark) .bg-slate-950\/70,
+html:not(.dark) .bg-slate-950\/60,
+html:not(.dark) .bg-slate-950\/40,
+html:not(.dark) .bg-slate-950\/30 {
+  background-color: #f8fafc !important;
+}
+
+html:not(.dark) .border-slate-800,
+html:not(.dark) .border-slate-800\/80,
+html:not(.dark) .border-slate-800\/60,
+html:not(.dark) .border-slate-800\/40,
+html:not(.dark) .border-slate-700,
+html:not(.dark) .border-slate-700\/80,
+html:not(.dark) .border-slate-700\/50 {
+  border-color: #cbd5e1 !important;
+}
+
+/* Light mode text colors */
+html:not(.dark) .text-slate-100 {
+  color: #0f172a !important;
+}
+
+html:not(.dark) .text-slate-200 {
+  color: #1e293b !important;
+}
+
+html:not(.dark) .text-slate-300 {
+  color: #334155 !important;
+}
+
+html:not(.dark) .text-slate-400 {
+  color: #475569 !important;
+}
+
+html:not(.dark) .text-slate-500 {
+  color: #64748b !important;
+}
+
+/* Exclude colored solid buttons from white text override */
+html:not(.dark) :not(button.bg-sky-600):not(button.bg-emerald-600):not(button.bg-rose-600):not(button.bg-amber-600):not(button.bg-purple-600):not(.bg-sky-600):not(.bg-emerald-600):not(.bg-rose-600):not(.bg-amber-600):not(.bg-purple-600)>.text-white {
+  color: #0f172a;
+}
+
+html:not(.dark) h1.text-white,
+html:not(.dark) h2.text-white,
+html:not(.dark) h3.text-white,
+html:not(.dark) span.text-white {
+  color: #0f172a !important;
+}
+
+/* Light mode input elements */
+html:not(.dark) input[type="text"],
+html:not(.dark) input[type="number"],
+html:not(.dark) input[type="password"],
+html:not(.dark) select {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+html:not(.dark) select option {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+/* Light mode status badge & tint overrides */
+html:not(.dark) .bg-sky-950\/40,
+html:not(.dark) .bg-sky-950\/30,
+html:not(.dark) .bg-sky-950\/20,
+html:not(.dark) .bg-sky-950 {
+  background-color: #f0f9ff !important;
+}
+
+html:not(.dark) .text-sky-400,
+html:not(.dark) .text-sky-300 {
+  color: #0284c7 !important;
+}
+
+html:not(.dark) .bg-emerald-950\/40,
+html:not(.dark) .bg-emerald-950\/30,
+html:not(.dark) .bg-emerald-950\/20,
+html:not(.dark) .bg-emerald-950 {
+  background-color: #ecfdf5 !important;
+}
+
+html:not(.dark) .text-emerald-400,
+html:not(.dark) .text-emerald-300 {
+  color: #059669 !important;
+}
+
+html:not(.dark) .bg-amber-950\/40,
+html:not(.dark) .bg-amber-950\/30,
+html:not(.dark) .bg-amber-950\/20,
+html:not(.dark) .bg-amber-950 {
+  background-color: #fffbeb !important;
+}
+
+html:not(.dark) .text-amber-400,
+html:not(.dark) .text-amber-300 {
+  color: #d97706 !important;
+}
+
+html:not(.dark) .bg-rose-950\/40,
+html:not(.dark) .bg-rose-950\/30,
+html:not(.dark) .bg-rose-950\/20,
+html:not(.dark) .bg-rose-950 {
+  background-color: #fff1f2 !important;
+}
+
+html:not(.dark) .text-rose-400,
+html:not(.dark) .text-rose-300 {
+  color: #e11d48 !important;
+}
+
+html:not(.dark) .bg-purple-950\/40,
+html:not(.dark) .bg-purple-950\/30,
+html:not(.dark) .bg-purple-950\/20,
+html:not(.dark) .bg-purple-950 {
+  background-color: #faf5ff !important;
+}
+
+html:not(.dark) .text-purple-400,
+html:not(.dark) .text-purple-300 {
+  color: #7c3aed !important;
+}
+
+/* Tactical HUD Glows */
+.hud-border {
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  box-shadow: 0 0 15px rgba(56, 189, 248, 0.08), inset 0 0 15px rgba(56, 189, 248, 0.03);
+}
+
+html:not(.dark) .hud-border {
+  border: 1px solid rgba(2, 132, 199, 0.35);
+  box-shadow: 0 2px 8px rgba(2, 132, 199, 0.08);
+}
+
+.hud-border-warning {
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  box-shadow: 0 0 15px rgba(245, 158, 11, 0.12);
+}
+
+.hud-border-danger {
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.2);
+}
+
+.hud-border-success {
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  box-shadow: 0 0 15px rgba(16, 185, 129, 0.15);
+}
+
+/* Custom Tactical Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0b111e;
+}
+
+html:not(.dark) ::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 3px;
+}
+
+html:not(.dark) ::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+html:not(.dark) ::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* High Contrast Outdoor Mode */
+.sunlight-readable {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+}
+
+/* Scanline and grid overlays */
+.grid-bg {
+  background-size: 24px 24px;
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+}
+
+html:not(.dark) .grid-bg {
+  background-image:
+    linear-gradient(to right, rgba(15, 23, 42, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(15, 23, 42, 0.04) 1px, transparent 1px);
+}
+
+/* ============================================================ */
+/* LEAFLET & GOOGLE MAPS GROUND STATION STYLING (GoogleMap.html) */
+/* ============================================================ */
+.leaflet-container {
+  font-family: 'Inter', system-ui, sans-serif !important;
+  background-color: #0b111e !important;
+  outline: none;
+}
+
+/* Custom Tactical Leaflet Popups */
+.tactical-popup .leaflet-popup-content-wrapper {
+  background: rgba(15, 23, 42, 0.95) !important;
+  backdrop-filter: blur(12px);
+  color: #f1f5f9 !important;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 12px;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6), 0 0 15px rgba(56, 189, 248, 0.15);
+  padding: 0;
+}
+
+.tactical-popup .leaflet-popup-content {
+  margin: 10px 14px;
+  line-height: 1.4;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.tactical-popup .leaflet-popup-tip {
+  background: rgba(15, 23, 42, 0.95) !important;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+}
+
+.tactical-popup .leaflet-popup-close-button {
+  color: #94a3b8 !important;
+  padding: 4px 6px;
+}
+
+/* Pulse animation for Home Point beacon */
+@keyframes home-beacon {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.9;
+  }
+
+  50% {
+    transform: scale(1.6);
+    opacity: 0.3;
+  }
+
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+.animate-home-pulse {
+  animation: home-beacon 2.4s infinite cubic-bezier(0.2, 0.8, 0.4, 1);
+}
+
+/* Pulse animation for Active Drone Heading */
+@keyframes drone-sweep {
+  0% {
+    box-shadow: 0 0 0 0 rgba(14, 165, 233, 0.7);
+  }
+
+  70% {
+    box-shadow: 0 0 0 14px rgba(14, 165, 233, 0);
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 rgba(14, 165, 233, 0);
+  }
+}
+
+.animate-drone-ring {
+  animation: drone-sweep 2s infinite ease-out;
+}
+
+/* Leaflet Draw Custom Toolbar adjustments */
+.leaflet-draw-toolbar a {
+  background-color: #0f172a !important;
+  border-color: #334155 !important;
+  color: #38bdf8 !important;
+}
+
+.leaflet-draw-toolbar a:hover {
+  background-color: #1e293b !important;
+}

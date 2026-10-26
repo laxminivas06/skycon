@@ -1,0 +1,45 @@
+/* SKYCON GCS Design Tokens — Realistic Tactical Aerospace HUD (Stitch AI) */
+:root {
+  --uav-bg: #0D1117;
+  --uav-header: #11161D;
+  --uav-card: #161B22;
+  --uav-card-border: #262C36;
+  --uav-card-hover: #21262D;
+  --uav-card-inner: #090D12;
+  --uav-text: #E6EDF3;
+  --uav-muted: #8B949E;
+  --uav-primary-blue: #10B981; /* Tactical Aerospace Emerald replaces saturated cobalt */
+  --uav-primary: #10B981;
+  --uav-icon-blue: #38BDF8;
+  --uav-vector-amber: #E5A93C;
+  --uav-green: #10B981;
+  --uav-green-fill: #059669;
+  --uav-amber: #F59E0B;
+  --uav-red: #EF4444;
+  --uav-red-dark: #3b0d0d;
+  --uav-red-border: #7f1d1d;
+  --uav-purple: #A855F7;
+}
+
+/* Base Body Surface */
+body.uav-theme {
+  background-color: var(--uav-bg) !important;
+  color: var(--uav-text) !important;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* Custom Scrollbar for Telemetry Log & Lists */
+.uav-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.uav-scrollbar::-webkit-scrollbar-track {
+  background: #11161D;
+}
+.uav-scrollbar::-webkit-scrollbar-thumb {
+  background: #262C36;
+  border-radius: 4px;
+}
+.uav-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #30363D;
+}

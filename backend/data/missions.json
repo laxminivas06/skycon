@@ -1,0 +1,37 @@
+[
+  {
+    "missionId": "MISS_1792487657929",
+    "mode": "AUTONOMOUS",
+    "algorithm": "TANGENTIAL_CIRCULAR",
+    "searchCenter": null,
+    "searchRadiusMeters": 10,
+    "plannedAltitudeMeters": 10,
+    "timeLimitMinutes": 10,
+    "startTime": 1792487657929,
+    "deadline": 1792488257929,
+    "waypoints": [],
+    "status": "DEADLINE_REACHED",
+    "abortReason": null,
+    "rtlStatus": "DEADLINE_RETURN_INITIATED",
+    "terminalStatus": "IN_FLIGHT",
+    "lastUpdated": 1792487657930,
+    "deadlineReachedTime": 1792488258482
+  },
+  {
+    "missionId": "MISS_1792487571495",
+    "mode": "AUTONOMOUS",
+    "algorithm": "TANGENTIAL_CIRCULAR",
+    "searchCenter": null,
+    "searchRadiusMeters": 10,
+    "plannedAltitudeMeters": 10,
+    "timeLimitMinutes": 10,
+    "startTime": 1792487571495,
+    "deadline": 1792488171495,
+    "waypoints": [],
+    "status": "ABORTED",
+    "abortReason": null,
+    "rtlStatus": "IDLE",
+    "terminalStatus": "IN_FLIGHT",
+    "lastUpdated": 1792487571496
+  }
+]

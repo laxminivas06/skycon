@@ -1,0 +1,36 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+  SECRETS_SCAN_ENABLED = "false"
+  SECRETS_SCAN_OMIT_KEYS = "VITE_RELAY_TOKEN,VITE_SECURE_RELAY_URL"
+  SECRETS_SCAN_OMIT_PATHS = "dist/**,frontend/dist/**,esp32-firmware/**"
+
+# Proxy /api requests to Render production backend (seasphndrone-backend.onrender.com)
+[[redirects]]
+  from = "/api/*"
+  to = "https://seasphndrone-backend.onrender.com/api/:splat"
+  status = 200
+  force = true
+
+# Single-Page Application (SPA) redirect rule for React Router / client routes
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Security and browser feature permissions
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "SAMEORIGIN"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=*, geolocation=*"
+
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"

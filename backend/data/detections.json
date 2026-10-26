@@ -1,0 +1,28 @@
+[
+  {
+    "detectionId": "DET_1792487657927",
+    "missionId": "MISS_TEST_01",
+    "payload": "QR_AERO_mvggvcnb",
+    "droneLatitude": 13.082711,
+    "droneLongitude": 80.270722,
+    "gpsFixValid": true,
+    "gpsFixType": "3D_FIX",
+    "satellites": 12,
+    "hdop": 0.8,
+    "timestamp": 1792487657927,
+    "serverReceivedTime": 1792487657927
+  },
+  {
+    "detectionId": "DET_1792487571492",
+    "missionId": "MISS_TEST_01",
+    "payload": "QR_AERO_mvggthyc",
+    "droneLatitude": 13.082711,
+    "droneLongitude": 80.270722,
+    "gpsFixValid": true,
+    "gpsFixType": "3D_FIX",
+    "satellites": 12,
+    "hdop": 0.8,
+    "timestamp": 1792487571492,
+    "serverReceivedTime": 1792487571493
+  }
+]

@@ -1,0 +1,16 @@
+{
+  "name": "sae-local-connector",
+  "version": "1.0.0",
+  "description": "Local connector bridging ESP32 LAN WebSocket to Cloud Secure Relay",
+  "main": "connector.js",
+  "type": "module",
+  "scripts": {
+    "start": "node connector.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

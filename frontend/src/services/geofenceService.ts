@@ -1,0 +1,541 @@
+/**
+ * Geofence Coordination Service
+ * Manages autonomous geofence boundaries (Circle, Rectangle, Arena, Polygon),
+ * altitude ceilings/floors, breach failsafe actions (RTL, LOITER, LAND),
+ * real-time telemetry breach monitoring, and MAVLink / Pixhawk synchronization.
+ */
+
+import { mavlinkService } from './mavlinkService';
+import { audioService } from './audioService';
+import { LatLngPoint } from '../types/mission';
+
+export type GeofenceShape = 'ARENA_RECTANGLE' | 'CIRCLE' | 'CUSTOM_POLYGON';
+export type GeofenceBreachAction = 'RTL' | 'LOITER' | 'LAND' | 'POSHOLD';
+export type GeofenceAnchor = 'HOME' | 'DRONE' | 'CUSTOM';
+
+export interface GeofenceConfig {
+  enabled: boolean;
+  shape: GeofenceShape;
+  radiusMeters: number;          // for CIRCLE
+  widthMeters: number;           // for ARENA_RECTANGLE (East-West)
+  heightMeters: number;          // for ARENA_RECTANGLE (North-South)
+  maxAltitudeMeters: number;     // Ceiling AGL
+  minAltitudeMeters: number;     // Floor AGL
+  breachAction: GeofenceBreachAction;
+  anchorType: GeofenceAnchor;
+  customAnchor: LatLngPoint | null;
+  customVertices: LatLngPoint[];
+}
+
+export interface GeofenceState extends GeofenceConfig {
+  isBreached: boolean;
+  breachReason: string | null;
+  distanceToBoundaryMeters: number | null;
+  currentAltitudeMeters: number;
+  lastBreachTimestamp: number | null;
+  effectiveAnchor: LatLngPoint | null;
+}
+
+const STORAGE_KEY = 'cade_geofence_config_v2';
+
+// Standard SAE India ADDC Rule 3.3 Defaults: 50m x 50m Arena, 25m Ceiling, RTL Action
+const DEFAULT_CONFIG: GeofenceConfig = {
+  enabled: true,
+  shape: 'ARENA_RECTANGLE',
+  radiusMeters: 50,
+  widthMeters: 50,
+  heightMeters: 50,
+  maxAltitudeMeters: 25.0,
+  minAltitudeMeters: 1.5,
+  breachAction: 'RTL',
+  anchorType: 'HOME',
+  customAnchor: null,
+  customVertices: [],
+};
+
+// Geodesic destination helper using WGS-84 Earth radius
+function computeDestination(lat: number, lon: number, distanceMeters: number, bearingDeg: number): LatLngPoint {
+  const R = 6371000;
+  const dByR = distanceMeters / R;
+  const radBearing = (bearingDeg * Math.PI) / 180;
+  const radLat = (lat * Math.PI) / 180;
+  const radLon = (lon * Math.PI) / 180;
+
+  const lat2 = Math.asin(
+    Math.sin(radLat) * Math.cos(dByR) +
+    Math.cos(radLat) * Math.sin(dByR) * Math.cos(radBearing)
+  );
+  const lon2 = radLon + Math.atan2(
+    Math.sin(radBearing) * Math.sin(dByR) * Math.cos(radLat),
+    Math.cos(dByR) - Math.sin(radLat) * Math.sin(lat2)
+  );
+
+  return {
+    lat: (lat2 * 180) / Math.PI,
+    lng: (lon2 * 180) / Math.PI,
+  };
+}
+
+// Haversine distance in meters
+function computeHaversine(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+// Point-in-polygon raycasting algorithm
+function isPointInPolygon(pt: LatLngPoint, poly: LatLngPoint[]): boolean {
+  if (poly.length < 3) return true;
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].lat, yi = poly[i].lng;
+    const xj = poly[j].lat, yj = poly[j].lng;
+    const intersect = ((yi > pt.lng) !== (yj > pt.lng)) &&
+      (pt.lat < ((xj - xi) * (pt.lng - yi)) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+class GeofenceService {
+  private config: GeofenceConfig = { ...DEFAULT_CONFIG };
+  private state: GeofenceState;
+  private listeners: Set<(state: GeofenceState) => void> = new Set();
+  private telemetryUnsubscribe: (() => void) | null = null;
+  private breachAudioCooldown = 0;
+  private autoFailsafeTriggered = false;
+
+  // Debounce & Hysteresis State to prevent GPS jitter and packet flickering
+  private consecutiveBreachCount = 0;
+  private consecutiveClearCount = 0;
+  private pendingBreachReason: string | null = null;
+  private hasClimbedAboveFloor = false;
+
+  constructor() {
+    this.restoreConfig();
+    this.state = {
+      ...this.config,
+      isBreached: false,
+      breachReason: null,
+      distanceToBoundaryMeters: null,
+      currentAltitudeMeters: 0,
+      lastBreachTimestamp: null,
+      effectiveAnchor: null,
+    };
+    this.initTelemetry();
+  }
+
+  private restoreConfig() {
+    if (typeof window === 'undefined') return;
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        this.config = { ...DEFAULT_CONFIG, ...parsed };
+      }
+    } catch {
+      this.config = { ...DEFAULT_CONFIG };
+    }
+  }
+
+  private persistConfig() {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.config));
+    } catch {}
+  }
+
+  private initTelemetry() {
+    this.telemetryUnsubscribe = mavlinkService.subscribeTelemetry((telem) => {
+      this.evaluateBreach(telem);
+    });
+  }
+
+  public getEffectiveAnchor(): LatLngPoint | null {
+    if (this.config.anchorType === 'CUSTOM' && this.config.customAnchor) {
+      return this.config.customAnchor;
+    }
+    const home = mavlinkService.getHomePoint();
+    if (this.config.anchorType === 'HOME' && home && home.isSet && Math.abs(home.latitude) > 0.001) {
+      return { lat: home.latitude, lng: home.longitude };
+    }
+    const telem = mavlinkService.getTelemetry();
+    if (telem && (telem.gps?.isLocked || (telem.gps?.satellites ?? 0) >= 4) && telem.latitude && Math.abs(telem.latitude) > 0.001) {
+      return { lat: telem.latitude, lng: telem.longitude };
+    }
+    if (home && Math.abs(home.latitude) > 0.001) {
+      return { lat: home.latitude, lng: home.longitude };
+    }
+    return null;
+  }
+
+  /**
+   * Generates polygon vertices for map rendering and breach checks
+   */
+  public getBoundaryVertices(): LatLngPoint[] {
+    const anchor = this.getEffectiveAnchor();
+    if (!anchor) return [];
+
+    if (this.config.shape === 'ARENA_RECTANGLE') {
+      const halfW = (this.config.widthMeters || 50) / 2;
+      const halfH = (this.config.heightMeters || 50) / 2;
+      const diag = Math.sqrt(halfW * halfW + halfH * halfH);
+      const angle = (Math.atan2(halfW, halfH) * 180) / Math.PI;
+
+      const p1 = computeDestination(anchor.lat, anchor.lng, diag, angle);
+      const p2 = computeDestination(anchor.lat, anchor.lng, diag, 180 - angle);
+      const p3 = computeDestination(anchor.lat, anchor.lng, diag, 180 + angle);
+      const p4 = computeDestination(anchor.lat, anchor.lng, diag, 360 - angle);
+      return [p1, p2, p3, p4];
+    }
+
+    if (this.config.shape === 'CIRCLE') {
+      const radius = this.config.radiusMeters || 50;
+      const segments = 32;
+      const vertices: LatLngPoint[] = [];
+      for (let i = 0; i < segments; i++) {
+        const bearing = (i * 360) / segments;
+        vertices.push(computeDestination(anchor.lat, anchor.lng, radius, bearing));
+      }
+      return vertices;
+    }
+
+    if (this.config.shape === 'CUSTOM_POLYGON' && this.config.customVertices.length >= 3) {
+      return this.config.customVertices;
+    }
+
+    return [];
+  }
+
+  /**
+   * Calculates true metric distance to the perimeter edge.
+   * Positive distance = inside boundary; Negative distance = outside boundary.
+   */
+  private computeHorizontalDistance(dronePt: LatLngPoint, anchor: LatLngPoint): { isBreached: boolean; distToEdge: number } {
+    if (this.config.shape === 'CIRCLE') {
+      const distFromCenter = computeHaversine(anchor.lat, anchor.lng, dronePt.lat, dronePt.lng);
+      const radius = this.config.radiusMeters || 50;
+      const distToEdge = +(radius - distFromCenter).toFixed(1);
+      return {
+        isBreached: distFromCenter > radius,
+        distToEdge,
+      };
+    }
+
+    if (this.config.shape === 'ARENA_RECTANGLE') {
+      const radLat = (anchor.lat * Math.PI) / 180;
+      const dx = (dronePt.lng - anchor.lng) * 111320 * Math.cos(radLat);
+      const dy = (dronePt.lat - anchor.lat) * 111320;
+      const hw = (this.config.widthMeters || 50) / 2;
+      const hh = (this.config.heightMeters || 50) / 2;
+
+      const absDx = Math.abs(dx);
+      const absDy = Math.abs(dy);
+
+      if (absDx <= hw && absDy <= hh) {
+        // Drone is strictly inside rectangle: distance to closest edge
+        const distToEdge = +(Math.min(hw - absDx, hh - absDy)).toFixed(1);
+        return { isBreached: false, distToEdge };
+      } else {
+        // Drone is outside rectangle: true Euclidean distance outside
+        const ox = Math.max(0, absDx - hw);
+        const oy = Math.max(0, absDy - hh);
+        const distOutside = Math.hypot(ox, oy);
+        return { isBreached: true, distToEdge: +(-distOutside).toFixed(1) };
+      }
+    }
+
+    if (this.config.shape === 'CUSTOM_POLYGON' && this.config.customVertices.length >= 3) {
+      const inside = isPointInPolygon(dronePt, this.config.customVertices);
+      const distFromCenter = computeHaversine(anchor.lat, anchor.lng, dronePt.lat, dronePt.lng);
+      const approxRadius = 50;
+      return {
+        isBreached: !inside,
+        distToEdge: inside ? +(approxRadius - distFromCenter).toFixed(1) : +(-distFromCenter).toFixed(1),
+      };
+    }
+
+    return { isBreached: false, distToEdge: 0 };
+  }
+
+  private evaluateBreach(telem: any) {
+    const currentAlt = telem.altitude || telem.altitudeMeters || 0;
+    this.state.currentAltitudeMeters = currentAlt;
+    const anchor = this.getEffectiveAnchor();
+    this.state.effectiveAnchor = anchor;
+
+    // Check GPS validity robustly (has coords and either locked or sufficient satellites)
+    const hasCoord = Boolean(telem.latitude && Math.abs(telem.latitude) > 0.001);
+    const isGpsLocked = Boolean(
+      telem.gps?.isLocked ||
+      (telem.gps?.satellites ?? 0) >= 4 ||
+      telem.gps?.fixType?.includes('3D') ||
+      telem.isGpsValid
+    );
+    const isGpsValid = hasCoord && isGpsLocked;
+
+    if (!this.config.enabled || !anchor) {
+      if (this.state.isBreached) {
+        this.state.isBreached = false;
+        this.state.breachReason = null;
+        this.autoFailsafeTriggered = false;
+        this.notify();
+      }
+      this.consecutiveBreachCount = 0;
+      this.consecutiveClearCount = 0;
+      return;
+    }
+
+    // If GPS packet is momentarily missing on a non-GPS telemetry frame, hold state without flapping
+    if (!isGpsValid) {
+      if (!telem.isArmed && this.state.isBreached) {
+        this.state.isBreached = false;
+        this.state.breachReason = null;
+        this.autoFailsafeTriggered = false;
+        this.notify();
+      }
+      return;
+    }
+
+    const dronePt: LatLngPoint = { lat: telem.latitude, lng: telem.longitude };
+    const { isBreached: isHorizontalBreached, distToEdge } = this.computeHorizontalDistance(dronePt, anchor);
+    this.state.distanceToBoundaryMeters = distToEdge;
+
+    // Track airborne climb state for floor protection:
+    // Floor breach MUST NOT trigger on the ground, during initial arming, or during initial takeoff climb!
+    if (!telem.isArmed) {
+      this.hasClimbedAboveFloor = false;
+    } else if (currentAlt > (this.config.minAltitudeMeters + 0.8)) {
+      this.hasClimbedAboveFloor = true;
+    }
+
+    // Floor breach applies ONLY when vehicle is confirmed airborne in cruise flight
+    const isFloorBreached = Boolean(
+      this.config.minAltitudeMeters > 0.5 &&
+      telem.isArmed &&
+      this.hasClimbedAboveFloor &&
+      currentAlt < this.config.minAltitudeMeters &&
+      currentAlt > 0.3
+    );
+
+    // Ceiling breach with 0.3m hysteresis to prevent oscillation near boundary
+    const isCeilingBreached = this.state.isBreached && (this.state.breachReason?.includes('Ceiling') ?? false)
+      ? currentAlt > (this.config.maxAltitudeMeters - 0.3)
+      : currentAlt > this.config.maxAltitudeMeters;
+
+    const rawBreach = isHorizontalBreached || isCeilingBreached || isFloorBreached;
+
+    if (rawBreach) {
+      this.consecutiveClearCount = 0;
+      this.consecutiveBreachCount++;
+
+      let reason = '';
+      if (isHorizontalBreached) reason = 'Perimeter Boundary Breached';
+      else if (isCeilingBreached) reason = `Altitude Ceiling Exceeded (${currentAlt.toFixed(1)}m > ${this.config.maxAltitudeMeters}m)`;
+      else if (isFloorBreached) reason = `Floor Altitude Breached (${currentAlt.toFixed(1)}m < ${this.config.minAltitudeMeters}m)`;
+      this.pendingBreachReason = reason;
+
+      // Debounce: require 3 consecutive breach samples (~150-300ms) to confirm breach.
+      // This eliminates instantaneous GPS coordinate jitter and baro spikes.
+      if (this.consecutiveBreachCount >= 3) {
+        const wasAlreadyBreached = this.state.isBreached;
+        this.state.isBreached = true;
+        this.state.breachReason = this.pendingBreachReason;
+        this.state.lastBreachTimestamp = Date.now();
+
+        // Trigger audible warning on confirmed breach or every 5 seconds
+        if (Date.now() - this.breachAudioCooldown > 5000) {
+          this.breachAudioCooldown = Date.now();
+          audioService.playRtlAlert();
+          audioService.triggerHaptic('warning');
+        }
+
+        // Execute autonomous failsafe action ONLY ONCE per breach event if airborne and armed
+        if (telem.isArmed && !this.autoFailsafeTriggered && !wasAlreadyBreached) {
+          this.autoFailsafeTriggered = true;
+          this.executeBreachAction(this.config.breachAction);
+        }
+      }
+    } else {
+      this.consecutiveBreachCount = 0;
+      this.consecutiveClearCount++;
+
+      // Debounce recovery: require 3 consecutive clean samples before clearing breach state
+      if (this.consecutiveClearCount >= 3) {
+        if (this.state.isBreached) {
+          this.state.isBreached = false;
+          this.state.breachReason = null;
+          this.autoFailsafeTriggered = false;
+        }
+      }
+    }
+
+    this.notify();
+  }
+
+  private async executeBreachAction(action: GeofenceBreachAction) {
+    console.warn(`[GEOFENCE FAILSAFE] Executing breach response: ${action}`);
+    try {
+      if (action === 'RTL') {
+        await mavlinkService.setFlightMode('RTL');
+      } else if (action === 'LOITER') {
+        await mavlinkService.setFlightMode('LOITER');
+      } else if (action === 'LAND') {
+        await mavlinkService.setFlightMode('LAND');
+      } else if (action === 'POSHOLD') {
+        await mavlinkService.setFlightMode('POSHOLD');
+      }
+    } catch (e) {
+      console.error('[GEOFENCE] Failed to dispatch breach mode command', e);
+    }
+  }
+
+  public setEnabled(enabled: boolean) {
+    this.config.enabled = enabled;
+    this.state.enabled = enabled;
+    if (!enabled) {
+      this.state.isBreached = false;
+      this.state.breachReason = null;
+      this.autoFailsafeTriggered = false;
+      this.consecutiveBreachCount = 0;
+      this.consecutiveClearCount = 0;
+      this.hasClimbedAboveFloor = false;
+    }
+    this.persistConfig();
+    this.notify();
+  }
+
+  public updateConfig(newConfig: Partial<GeofenceConfig>) {
+    this.config = { ...this.config, ...newConfig };
+    this.state = { ...this.state, ...this.config };
+    this.persistConfig();
+    this.notify();
+  }
+
+  public resetToADDCDefaults() {
+    this.config = { ...DEFAULT_CONFIG };
+    this.state = {
+      ...this.state,
+      ...this.config,
+      isBreached: false,
+      breachReason: null,
+      distanceToBoundaryMeters: null,
+    };
+    this.autoFailsafeTriggered = false;
+    this.consecutiveBreachCount = 0;
+    this.consecutiveClearCount = 0;
+    this.hasClimbedAboveFloor = false;
+    this.persistConfig();
+    audioService.playBeep(880, 100);
+    this.notify();
+  }
+
+  public clearGeofence() {
+    this.config.enabled = false;
+    this.state.enabled = false;
+    this.state.isBreached = false;
+    this.state.breachReason = null;
+    this.autoFailsafeTriggered = false;
+    this.consecutiveBreachCount = 0;
+    this.consecutiveClearCount = 0;
+    this.hasClimbedAboveFloor = false;
+    this.persistConfig();
+    audioService.playBeep(450, 80);
+    this.notify();
+  }
+
+  /**
+   * Sets a custom anchor point anywhere (e.g. cricket ground selected on map)
+   */
+  public setCustomAnchor(lat: number, lng: number) {
+    this.config.anchorType = 'CUSTOM';
+    this.config.customAnchor = { lat, lng };
+    this.state.anchorType = 'CUSTOM';
+    this.state.customAnchor = { lat, lng };
+    this.state.effectiveAnchor = { lat, lng };
+    this.consecutiveBreachCount = 0;
+    this.consecutiveClearCount = 0;
+    this.persistConfig();
+    audioService.playBeep(880, 80);
+    this.notify();
+  }
+
+  /**
+   * Checks whether given coordinate is strictly inside the active geofence.
+   * Supports an optional tolerance margin in meters (useful for pre-arm GPS noise).
+   */
+  public isInsideGeofence(lat: number, lng: number, marginMeters: number = 0): boolean {
+    if (!this.config.enabled) return true;
+    const anchor = this.getEffectiveAnchor();
+    if (!anchor || Math.abs(lat) <= 0.001) return true;
+
+    if (this.config.shape === 'CIRCLE') {
+      const dist = computeHaversine(anchor.lat, anchor.lng, lat, lng);
+      return dist <= ((this.config.radiusMeters || 50) + marginMeters);
+    } else if (this.config.shape === 'ARENA_RECTANGLE') {
+      const radLat = (anchor.lat * Math.PI) / 180;
+      const dx = (lng - anchor.lng) * 111320 * Math.cos(radLat);
+      const dy = (lat - anchor.lat) * 111320;
+      const hw = (this.config.widthMeters || 50) / 2 + marginMeters;
+      const hh = (this.config.heightMeters || 50) / 2 + marginMeters;
+      return Math.abs(dx) <= hw && Math.abs(dy) <= hh;
+    } else {
+      const vertices = this.getBoundaryVertices();
+      if (vertices.length < 3) return true;
+      return isPointInPolygon({ lat, lng }, vertices);
+    }
+  }
+
+  /**
+   * Checks whether the vehicle is permitted to arm under geofence rules.
+   * Applies pre-arm center proximity and a 3.0m ground GPS noise buffer.
+   */
+  public canArmVehicle(lat?: number, lng?: number): { canArm: boolean; reason?: string } {
+    if (!this.config.enabled) return { canArm: true };
+    const droneLat = lat ?? mavlinkService.getTelemetry().latitude;
+    const droneLng = lng ?? mavlinkService.getTelemetry().longitude;
+    if (droneLat && droneLng && Math.abs(droneLat) > 0.001) {
+      const anchor = this.getEffectiveAnchor();
+      if (!anchor) return { canArm: true };
+
+      // Pre-arm check: If within 5 meters of anchor point (takeoff position), always allow arming
+      const distToAnchor = computeHaversine(anchor.lat, anchor.lng, droneLat, droneLng);
+      if (distToAnchor < 5.0) {
+        return { canArm: true };
+      }
+
+      // 3.0-meter ground GPS tolerance buffer ensures noise on the launch pad never blocks arming
+      const inside = this.isInsideGeofence(droneLat, droneLng, 3.0);
+      if (!inside) {
+        return {
+          canArm: false,
+          reason: `Aircraft is OUTSIDE active Geofence boundary (${distToAnchor.toFixed(0)}m from center). Position geofence over current area to arm.`
+        };
+      }
+    }
+    return { canArm: true };
+  }
+
+  public getState(): GeofenceState {
+    return { ...this.state };
+  }
+
+  public subscribe(fn: (state: GeofenceState) => void): () => void {
+    this.listeners.add(fn);
+    fn(this.getState());
+    return () => this.listeners.delete(fn);
+  }
+
+  private notify() {
+    const s = this.getState();
+    this.listeners.forEach((fn) => fn(s));
+  }
+}
+
+export const geofenceService = new GeofenceService();

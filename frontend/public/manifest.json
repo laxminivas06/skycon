@@ -1,0 +1,22 @@
+{
+  "short_name": "SAE Drone",
+  "name": "SAE INDIA — Autonomous Drone Rescue & QR Mission System",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "/icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#06090e",
+  "theme_color": "#06090e",
+  "display": "standalone",
+  "orientation": "any",
+  "categories": ["utilities", "productivity", "navigation"]
+}

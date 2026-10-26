@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Pixhawk / 3DR / ArduPilot / PX4 Flight Controllers -->
+    <usb-device vendor-id="9899" /> <!-- 0x26AC: 3D Robotics / Pixhawk 1, 2.4.8, Cube -->
+    <usb-device vendor-id="9899" product-id="16" /> <!-- 0x0010: PX4 FMU v1.x -->
+    <usb-device vendor-id="9899" product-id="17" /> <!-- 0x0011: PX4 FMU v2.x (Pixhawk 2.4.8) -->
+    <usb-device vendor-id="9899" product-id="18" /> <!-- 0x0012: PX4 FMU v3.x -->
+    <usb-device vendor-id="9899" product-id="19" /> <!-- 0x0013: PX4 FMU v4.x / Pixracer -->
+    <usb-device vendor-id="9899" product-id="21" /> <!-- 0x0015: Pixhawk 4 -->
+    <usb-device vendor-id="9899" product-id="33" /> <!-- 0x0021: Cube Orange / Black -->
+    <usb-device vendor-id="9899" product-id="49" /> <!-- 0x0031: Cube Orange+ -->
+
+    <!-- Open Source STM32 / ArduPilot / PX4 CDC ACM -->
+    <usb-device vendor-id="4617" /> <!-- 0x1209: Open Source Hardware / ArduPilot ChibiOS -->
+    <usb-device vendor-id="1155" /> <!-- 0x0483: STMicroelectronics Virtual COM Port / STM32F4/F7/H7 -->
+    <usb-device vendor-id="1155" product-id="22336" /> <!-- 0x0483:0x5740 STM32 CDC ACM -->
+
+    <!-- Silicon Labs CP210x UART Bridges (Used in Pixhawk TELEM modules & SiK Radios) -->
+    <usb-device vendor-id="4292" /> <!-- 0x10C4: Silicon Labs CP2102/CP2104/CP2108 -->
+
+    <!-- FTDI FT232R / FT2232 / FT4232 UART Bridges -->
+    <usb-device vendor-id="1027" /> <!-- 0x0403: Future Technology Devices International -->
+
+    <!-- QinHeng CH340 / CH341 / CH9102 Serial Bridges -->
+    <usb-device vendor-id="6790" /> <!-- 0x1A86: WCH CH340 / CH341 -->
+    <usb-device vendor-id="11836" /> <!-- 0x2E3C: WCH CH9102 -->
+
+    <!-- Prolific PL2303 UART Bridges -->
+    <usb-device vendor-id="1659" /> <!-- 0x067B: Prolific PL2303 -->
+
+    <!-- Espressif ESP32-S2 / ESP32-S3 USB CDC ACM -->
+    <usb-device vendor-id="12346" /> <!-- 0x303A: Espressif USB CDC -->
+
+    <!-- Generic USB Communication Device Class (CDC ACM) -->
+    <usb-device class="2" />
+    <usb-device class="10" />
+    <usb-device class="255" /> <!-- Vendor Specific with bulk endpoints -->
+</resources>
