@@ -72,6 +72,7 @@ export interface SearchBoundaryConfig {
   coordinates: LatLngPoint[];
   circleCenter?: LatLngPoint;
   circleRadiusMeters?: number;
+  circleDirection?: 'CW' | 'CCW';
   widthMeters?: number;
   heightMeters?: number;
   areaSquareMeters?: number;

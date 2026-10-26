@@ -30,6 +30,7 @@ interface HeaderProps {
   onToggleRC?: () => void;
   rcOverrideEnabled?: boolean;
   currentRole?: AppRole;
+  onOpenPhoneMission?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -44,6 +45,7 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleRC,
   rcOverrideEnabled = true,
   currentRole = 'GROUND_STATION',
+  onOpenPhoneMission,
 }) => {
   const isArmed = telemetry.isArmed;
   const [connState, setConnState] = useState<GCSConnectionState>(() => gcsConnectionService.getState());
@@ -265,6 +267,17 @@ export const Header: React.FC<HeaderProps> = ({
             <span>🤖</span>
             <span>AUTONOMOUS</span>
           </button>
+          {onOpenPhoneMission && (
+            <button
+              type="button"
+              onClick={onOpenPhoneMission}
+              className="flex items-center gap-1.5 px-3 py-1 rounded-[6px] text-[11px] font-bold font-sans tracking-wide bg-cyan-950/70 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-900/60 transition cursor-pointer shadow-sm ml-1"
+              title="Autonomous Phone-to-Drone Vision & Mission Dashboard"
+            >
+              <span>📱</span>
+              <span>PHONE MISSION</span>
+            </button>
+          )}
         </div>
       </div>
 

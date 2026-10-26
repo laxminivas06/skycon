@@ -1,6 +1,6 @@
 import { LatLngPoint, SearchBoundaryConfig } from '../../types/mission';
 
-export type SearchAlgorithmId = 'GRID' | 'SPIRAL' | 'EXPANDING_SPIRAL' | 'PERIMETER' | 'ADAPTIVE' | 'SECTOR' | 'CONTOUR';
+export type SearchAlgorithmId = 'GRID' | 'SPIRAL' | 'EXPANDING_SPIRAL' | 'PERIMETER' | 'ADAPTIVE' | 'SECTOR' | 'CONTOUR' | 'TANGENTIAL';
 
 export interface CameraParameters {
   fovHorizontalDeg: number;  // Horizontal Field of View (degrees, default: 70)

@@ -4,6 +4,7 @@ import { GridSearch } from './GridSearch';
 import { SpiralSearch } from './SpiralSearch';
 import { PerimeterSearch } from './PerimeterSearch';
 import { AdaptiveSearch } from './AdaptiveSearch';
+import { TangentialSearch } from './TangentialSearch';
 import {
   SearchAlgorithmId,
   SearchPathResult,
@@ -77,6 +78,7 @@ export class SearchEngine {
     this.algorithms.set('ADAPTIVE', new AdaptiveSearch());
     this.algorithms.set('SECTOR', new SpiralSearch());
     this.algorithms.set('CONTOUR', new PerimeterSearch());
+    this.algorithms.set('TANGENTIAL', new TangentialSearch());
 
     const baseAlgo = this.algorithms.get('GRID')!;
     this.groundFootprint = baseAlgo.calculateGroundCoverage(

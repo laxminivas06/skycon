@@ -32,6 +32,7 @@ import { FlightParams } from './FlightParams';
 import { AutonomousMissionConfigModal } from '../../components/Mission/AutonomousMissionConfigModal';
 import { MissionHistoryModal } from '../../components/History/MissionHistoryModal';
 import { SerialDiagnosticsModal } from '../../components/Drone/SerialDiagnosticsModal';
+import { PhoneDroneDashboard } from '../../components/PhoneMission/PhoneDroneDashboard';
 import { AppRole } from '../../types/mission';
 
 interface DashboardPageProps {
@@ -53,6 +54,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   const [mobileView, setMobileView] = useState<'telemetry' | 'map' | 'operations'>('map');
   const [showPreflightModal, setShowPreflightModal] = useState<boolean>(false);
   const [showRtlModal, setShowRtlModal] = useState<boolean>(false);
+  const [showPhoneMissionModal, setShowPhoneMissionModal] = useState<boolean>(false);
   const [rtlConfirmPending, setRtlConfirmPending] = useState<boolean>(false);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
 
@@ -453,6 +455,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         }}
         onToggleRC={handleToggleRC}
         rcOverrideEnabled={telemetry.rcOverrideEnabled}
+        onOpenPhoneMission={() => setShowPhoneMissionModal(true)}
       />
 
       {/* Alert Banners (Link Lost / Stale Heartbeat / Connecting) */}
@@ -938,6 +941,28 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 Close
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Phone Drone Mission Fullscreen Modal */}
+      {showPhoneMissionModal && (
+        <div className="fixed inset-0 z-50 bg-[#070b14] flex flex-col">
+          <div className="h-10 px-4 bg-[#0b1220] border-b border-slate-800 flex items-center justify-between z-10 shrink-0">
+            <span className="text-xs font-mono font-bold text-cyan-400 flex items-center gap-1.5">
+              <span>📱</span>
+              <span>AUTONOMOUS PHONE RECON MISSION DASHBOARD</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowPhoneMissionModal(false)}
+              className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-mono font-bold transition"
+            >
+              ✕ CLOSE
+            </button>
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            <PhoneDroneDashboard />
           </div>
         </div>
       )}
