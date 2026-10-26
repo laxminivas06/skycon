@@ -342,10 +342,10 @@ void handleWiFiMaintenance() {
     delay(100);
     startWiFiConnection(targetSSID, targetPass);
 
-    // If 3 failed attempts, scan the air to assist troubleshooting
+    // If 3 failed attempts, log troubleshooting advice without blocking loop
     if (wifiAttemptCount >= 3) {
       wifiAttemptCount = 0;
-      scanVisibleNetworks();
+      Serial.println("⚠️ [WIFI] 3 failed connection attempts. Verify SSID/password and 2.4GHz hotspot band.");
     }
   }
 }
@@ -476,18 +476,31 @@ void loop() {
 
   // 5. Read binary MAVLink telemetry from Pixhawk TELEM2 -> Forward to Cloud Relay
   // ULTRA-LOW-LATENCY INTELLIGENT BATCHING:
-  // Collect bytes from UART until either 256 bytes accumulate OR UART line goes idle for 12ms.
-  while (PixhawkSerial.available() > 0 && uartBatchLen < UART_BUFFER_SIZE) {
-    uint8_t b = (uint8_t)PixhawkSerial.read();
-    if (b == 0xFE || b == 0xFD) {
-      if (!isBaudLocked) {
+  // If WebSocket is offline, drain UART to prevent hardware FIFO overflow and stale backlog
+  if (!wsClient.available()) {
+    while (PixhawkSerial.available() > 0) {
+      uint8_t b = (uint8_t)PixhawkSerial.read();
+      if ((b == 0xFE || b == 0xFD) && !isBaudLocked) {
         isBaudLocked = true;
         Serial.printf("\n🎯 [TELEM2 LOCKED] Valid MAVLink framing (0x%02X) confirmed at %lu baud!\n", b, (unsigned long)activePixhawkBaud);
       }
+      totalRxBytesFromPixhawk++;
     }
-    uartBuffer[uartBatchLen++] = b;
-    lastUartByteTime = millis();
-    totalRxBytesFromPixhawk++;
+    uartBatchLen = 0;
+  } else {
+    // When WebSocket is connected, accumulate and forward
+    while (PixhawkSerial.available() > 0 && uartBatchLen < UART_BUFFER_SIZE) {
+      uint8_t b = (uint8_t)PixhawkSerial.read();
+      if (b == 0xFE || b == 0xFD) {
+        if (!isBaudLocked) {
+          isBaudLocked = true;
+          Serial.printf("\n🎯 [TELEM2 LOCKED] Valid MAVLink framing (0x%02X) confirmed at %lu baud!\n", b, (unsigned long)activePixhawkBaud);
+        }
+      }
+      uartBuffer[uartBatchLen++] = b;
+      lastUartByteTime = millis();
+      totalRxBytesFromPixhawk++;
+    }
   }
 
   // Auto-baud switcher: If no valid MAVLink header seen after 7s, test alternate baud (57600 <-> 115200)
