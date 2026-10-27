@@ -189,17 +189,22 @@ export class GridSearch extends BaseSearchAlgorithm {
       }
     }
 
-    // Calculate total distance
-    for (let i = 0; i < waypoints.length - 1; i++) {
-      totalDist += BaseSearchAlgorithm.getDistanceMeters(waypoints[i], waypoints[i + 1]);
+    // Calculate total distance with geofence polygon clamping
+    const effectiveBoundary = coords && coords.length >= 3 ? coords : undefined;
+    const clampedWaypoints = effectiveBoundary
+      ? BaseSearchAlgorithm.clampWaypointsToPolygon(waypoints, effectiveBoundary, 2.0)
+      : waypoints;
+
+    for (let i = 0; i < clampedWaypoints.length - 1; i++) {
+      totalDist += BaseSearchAlgorithm.getDistanceMeters(clampedWaypoints[i], clampedWaypoints[i + 1]);
     }
 
-    const estimatedTimeSeconds = totalDist / Math.max(1.0, flightSpeedMs) + waypoints.length * 1.5;
+    const estimatedTimeSeconds = totalDist / Math.max(1.0, flightSpeedMs) + clampedWaypoints.length * 1.5;
     const boundaryArea = BaseSearchAlgorithm.calculatePolygonAreaMeters(coords);
 
     return {
       algorithm: 'GRID',
-      waypoints,
+      waypoints: clampedWaypoints,
       totalDistanceMeters: Math.round(totalDist),
       estimatedTimeSeconds: Math.round(estimatedTimeSeconds),
       laneCount: laneIndex,

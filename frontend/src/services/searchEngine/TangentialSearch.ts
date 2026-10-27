@@ -116,17 +116,22 @@ export class TangentialSearch extends BaseSearchAlgorithm {
       currentLane++;
     }
 
+    const effectiveBoundary = coords && coords.length >= 3 ? coords : undefined;
+    const clampedWaypoints = effectiveBoundary
+      ? BaseSearchAlgorithm.clampWaypointsToPolygon(waypoints, effectiveBoundary, 2.0)
+      : waypoints;
+
     // Calculate total path distance
-    for (let j = 0; j < waypoints.length - 1; j++) {
-      totalDist += BaseSearchAlgorithm.getDistanceMeters(waypoints[j], waypoints[j + 1]);
+    for (let j = 0; j < clampedWaypoints.length - 1; j++) {
+      totalDist += BaseSearchAlgorithm.getDistanceMeters(clampedWaypoints[j], clampedWaypoints[j + 1]);
     }
 
-    const estimatedTimeSeconds = totalDist / Math.max(1.0, flightSpeedMs) + waypoints.length * 0.5;
+    const estimatedTimeSeconds = totalDist / Math.max(1.0, flightSpeedMs) + clampedWaypoints.length * 0.5;
     const boundaryArea = Math.PI * maxRadius * maxRadius;
 
     return {
       algorithm: 'TANGENTIAL',
-      waypoints,
+      waypoints: clampedWaypoints,
       totalDistanceMeters: Math.round(totalDist),
       estimatedTimeSeconds: Math.round(estimatedTimeSeconds),
       laneCount: radii.length,

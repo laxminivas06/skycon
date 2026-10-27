@@ -37,6 +37,15 @@ export interface IpCameraDetection {
   photoDataUrl?: string;
 }
 
+export interface StreamHealthMetrics {
+  fps: number;
+  latencyMs: number;
+  lastFrameTime: number;
+  droppedFrames: number;
+  isStalled: boolean;
+}
+
+export type StreamHealthListener = (health: StreamHealthMetrics) => void;
 export type ZoomListener = (zoom: number, isSweeping: boolean, isLocked: boolean) => void;
 export type StatusListener = (status: IpCameraStatus) => void;
 export type ToggleListener = (enabled: boolean) => void;
@@ -91,9 +100,23 @@ class IpCameraService {
   private detectionListeners: Set<DetectionListener> = new Set();
   private configListeners: Set<ConfigListener> = new Set();
   private sourceModeListeners: Set<SourceModeListener> = new Set();
+  private healthListeners: Set<StreamHealthListener> = new Set();
+
+  // Stream Health & Watchdog
+  private streamHealth: StreamHealthMetrics = {
+    fps: 0,
+    latencyMs: 0,
+    lastFrameTime: 0,
+    droppedFrames: 0,
+    isStalled: false
+  };
+  private frameCountSinceReport: number = 0;
+  private lastFpsCalcTime: number = 0;
+  private healthCheckIntervalId: any = null;
 
   constructor() {
     if (typeof window !== 'undefined') {
+      this.startHealthWatchdog();
       // 1. Load config
       try {
         const storedConfig = localStorage.getItem(STORAGE_KEY_CONFIG);
@@ -792,6 +815,75 @@ class IpCameraService {
     this.configListeners.forEach((fn) => {
       try { fn(this.config); } catch {}
     });
+  }
+
+  // =========================================================================
+  // STREAM HEALTH & MONITORING
+  // =========================================================================
+
+  public recordFrameRendered(latencyMs?: number) {
+    const now = Date.now();
+    this.streamHealth.lastFrameTime = now;
+    this.streamHealth.isStalled = false;
+    if (typeof latencyMs === 'number') {
+      this.streamHealth.latencyMs = latencyMs;
+    }
+    this.frameCountSinceReport++;
+    if (!this.lastFpsCalcTime) {
+      this.lastFpsCalcTime = now;
+    } else {
+      const elapsed = now - this.lastFpsCalcTime;
+      if (elapsed >= 1000) {
+        this.streamHealth.fps = Math.round((this.frameCountSinceReport * 1000) / elapsed);
+        this.frameCountSinceReport = 0;
+        this.lastFpsCalcTime = now;
+        this.notifyHealth();
+      }
+    }
+    if (this.status !== 'LIVE' && this.enabled) {
+      this.status = 'LIVE';
+      this.notifyStatus();
+    }
+  }
+
+  public getStreamHealth(): StreamHealthMetrics {
+    return { ...this.streamHealth };
+  }
+
+  public subscribeStreamHealth(fn: StreamHealthListener): () => void {
+    this.healthListeners.add(fn);
+    fn({ ...this.streamHealth });
+    return () => this.healthListeners.delete(fn);
+  }
+
+  private notifyHealth() {
+    const copy = { ...this.streamHealth };
+    this.healthListeners.forEach((fn) => {
+      try { fn(copy); } catch {}
+    });
+  }
+
+  private startHealthWatchdog() {
+    if (this.healthCheckIntervalId) return;
+    this.healthCheckIntervalId = setInterval(() => {
+      if (!this.enabled) return;
+      const now = Date.now();
+      if (this.streamHealth.lastFrameTime > 0 && (now - this.streamHealth.lastFrameTime > 3500)) {
+        if (!this.streamHealth.isStalled) {
+          this.streamHealth.isStalled = true;
+          this.streamHealth.droppedFrames++;
+          this.streamHealth.fps = 0;
+          this.notifyHealth();
+          // Auto-reconnect probe
+          this.testConnection().then(res => {
+            if (res.ok) {
+              this.streamHealth.isStalled = false;
+              this.notifyHealth();
+            }
+          }).catch(() => {});
+        }
+      }
+    }, 2000);
   }
 }
 

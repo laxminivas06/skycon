@@ -150,6 +150,14 @@ export const MapPanel: React.FC<MapPanelProps> = ({
   const isPlacingGeofenceRef = useRef<boolean>(isPlacingGeofence);
   isPlacingGeofenceRef.current = isPlacingGeofence;
 
+  // Interactive Polygon Geofence Drawing State
+  const [isDrawingPolygonGeofence, setIsDrawingPolygonGeofence] = useState<boolean>(false);
+  const [polygonGeofenceCount, setPolygonGeofenceCount] = useState<number>(0);
+  const polygonGeofencePtsRef = useRef<LatLngPoint[]>([]);
+  const polygonGeofenceLayerRef = useRef<L.Polygon | null>(null);
+  const isDrawingPolygonGeofenceRef = useRef<boolean>(isDrawingPolygonGeofence);
+  isDrawingPolygonGeofenceRef.current = isDrawingPolygonGeofence;
+
   const hasAutoCenteredRef = useRef<boolean>(false);
   const lastGeofenceAnchorRef = useRef<{ lat: number; lon: number } | null>(null);
 
@@ -329,6 +337,24 @@ export const MapPanel: React.FC<MapPanelProps> = ({
     // Handle map clicks for adding waypoints, circles, concentric circles, geofence, or measuring distance
     map.on('click', (e: L.LeafletMouseEvent) => {
       const { lat, lng } = e.latlng;
+
+      // -1. Polygon Geofence Drawing Mode: Click map vertices to build polygon
+      if (isDrawingPolygonGeofenceRef.current) {
+        polygonGeofencePtsRef.current.push({ lat, lng });
+        setPolygonGeofenceCount(polygonGeofencePtsRef.current.length);
+        if (!polygonGeofenceLayerRef.current) {
+          polygonGeofenceLayerRef.current = L.polygon(
+            polygonGeofencePtsRef.current.map((p) => [p.lat, p.lng]),
+            { color: '#f59e0b', weight: 2.5, dashArray: '4, 4', fillOpacity: 0.2 }
+          ).addTo(map);
+        } else {
+          polygonGeofenceLayerRef.current.setLatLngs(
+            polygonGeofencePtsRef.current.map((p) => [p.lat, p.lng])
+          );
+        }
+        audioService.playBeep(920, 50);
+        return;
+      }
 
       // 0. Geofence Placement Tool: Click map to place custom geofence center (e.g. Cricket Ground)
       if (isPlacingGeofenceRef.current) {
@@ -1164,6 +1190,78 @@ export const MapPanel: React.FC<MapPanelProps> = ({
         </form>
       </div>
 
+      {/* Polygon Geofence Drawing Banner */}
+      {isDrawingPolygonGeofence && (
+        <div className="absolute top-14 left-1/2 -translate-x-1/2 z-30 bg-slate-900/95 border-2 border-amber-500 rounded-xl px-4 py-2.5 shadow-2xl flex items-center gap-3 font-mono text-xs text-white backdrop-blur-md">
+          <div className="flex items-center gap-2">
+            <Shield className="w-4 h-4 text-amber-400 animate-pulse" />
+            <span className="font-bold">Drawing Polygon Geofence:</span>
+            <span className="bg-amber-950 px-2 py-0.5 rounded border border-amber-500/50 text-amber-300 font-extrabold">
+              {polygonGeofenceCount} vertices (min 3)
+            </span>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              disabled={polygonGeofenceCount < 3}
+              onClick={() => {
+                if (polygonGeofencePtsRef.current.length >= 3) {
+                  geofenceService.setCustomPolygon(polygonGeofencePtsRef.current);
+                  showTemporaryNotice(`Polygon Geofence Saved (${polygonGeofencePtsRef.current.length} vertices) ✓ Active & Armed Lockout Enforced`);
+                  audioService.playBeep(1100, 100);
+                  if (polygonGeofenceLayerRef.current && mapRef.current) {
+                    mapRef.current.removeLayer(polygonGeofenceLayerRef.current);
+                    polygonGeofenceLayerRef.current = null;
+                  }
+                  polygonGeofencePtsRef.current = [];
+                  setPolygonGeofenceCount(0);
+                  setIsDrawingPolygonGeofence(false);
+                }
+              }}
+              className={`px-2.5 py-1 rounded font-bold transition flex items-center gap-1 cursor-pointer ${
+                polygonGeofenceCount >= 3
+                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-md'
+                  : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+              }`}
+            >
+              <Check className="w-3.5 h-3.5" />
+              <span>FINISH & SAVE</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                polygonGeofencePtsRef.current = [];
+                setPolygonGeofenceCount(0);
+                if (polygonGeofenceLayerRef.current && mapRef.current) {
+                  polygonGeofenceLayerRef.current.setLatLngs([]);
+                }
+              }}
+              className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold transition cursor-pointer"
+            >
+              CLEAR
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (polygonGeofenceLayerRef.current && mapRef.current) {
+                  mapRef.current.removeLayer(polygonGeofenceLayerRef.current);
+                  polygonGeofenceLayerRef.current = null;
+                }
+                polygonGeofencePtsRef.current = [];
+                setPolygonGeofenceCount(0);
+                setIsDrawingPolygonGeofence(false);
+              }}
+              className="px-2 py-1 rounded bg-rose-900/60 hover:bg-rose-800 border border-rose-600 text-rose-200 font-bold transition cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Real Interactive Leaflet Map Container */}
       <div
         ref={mapContainerRef}
@@ -1343,6 +1441,42 @@ export const MapPanel: React.FC<MapPanelProps> = ({
             title="Place Geofence on Map: Click to set center (e.g. Cricket Ground)"
           >
             <MapPin className="w-3.5 h-3.5 text-amber-400" />
+          </button>
+
+          {/* Interactive Polygon Geofence Drawing Tool */}
+          <button
+            type="button"
+            onClick={() => {
+              const next = !isDrawingPolygonGeofence;
+              setIsDrawingPolygonGeofence(next);
+              if (next) {
+                setIsPlacingGeofence(false);
+                setIsDrawingFreehand(false);
+                setIsPlacingCircle(false);
+                setIsPlacingConcentric(false);
+                setIsPinningWp(false);
+                setIsMeasuring(false);
+                polygonGeofencePtsRef.current = [];
+                setPolygonGeofenceCount(0);
+                showTemporaryNotice('🛡️ Draw Polygon Geofence: Click map to place vertices (minimum 3 points)');
+                audioService.playBeep(920, 80);
+              } else {
+                if (polygonGeofenceLayerRef.current && mapRef.current) {
+                  mapRef.current.removeLayer(polygonGeofenceLayerRef.current);
+                  polygonGeofenceLayerRef.current = null;
+                }
+                polygonGeofencePtsRef.current = [];
+                setPolygonGeofenceCount(0);
+              }
+            }}
+            className={`w-7 h-7 rounded-[6px] flex items-center justify-center transition cursor-pointer ${
+              isDrawingPolygonGeofence
+                ? 'bg-amber-500 text-black font-bold shadow-lg animate-pulse'
+                : 'hover:bg-[#21262D] text-[var(--uav-muted)] hover:text-amber-300'
+            }`}
+            title="Draw Polygon Geofence: Click map to define custom containment perimeter (min 3 vertices)"
+          >
+            <Shield className="w-3.5 h-3.5 text-amber-400" />
           </button>
 
           {/* Geofence Modal Trigger */}

@@ -18,7 +18,11 @@ import {
   MapPin,
   Calendar,
   ShieldCheck,
-  RotateCcw
+  RotateCcw,
+  Navigation,
+  Copy,
+  ExternalLink,
+  Compass
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -42,6 +46,29 @@ export const RunnerDashboard: React.FC<RunnerDashboardProps> = ({
   const [ackDispatched, setAckDispatched] = useState<boolean>(false);
   const [receiptTimestamp, setReceiptTimestamp] = useState<number | null>(null);
   const [showDiagnostics, setShowDiagnostics] = useState<boolean>(false);
+  const [runnerGps, setRunnerGps] = useState<{ lat: number; lon: number } | null>(null);
+  const [copiedCoords, setCopiedCoords] = useState<boolean>(false);
+
+  // Watch Runner's phone GPS for live intercept tracking
+  useEffect(() => {
+    if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
+      const watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          setRunnerGps({
+            lat: pos.coords.latitude,
+            lon: pos.coords.longitude
+          });
+        },
+        (err) => {
+          console.warn('[RUNNER_GPS] Watch error:', err.message);
+        },
+        { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 }
+      );
+      return () => {
+        navigator.geolocation.clearWatch(watchId);
+      };
+    }
+  }, []);
 
   // Deduplication lock to prevent duplicate sound alerts or timer interruptions
   const lastProcessedIdRef = useRef<string | null>(null);
@@ -147,6 +174,30 @@ export const RunnerDashboard: React.FC<RunnerDashboardProps> = ({
   const isExpired = remainingSeconds === 0;
 
   const isConnected = runnerLink.isConnected;
+
+  const targetLat: number | null = (latestRecord as any)?.estimatedTargetLocation?.targetLatitude ?? (latestRecord as any)?.targetLatitude ?? (latestRecord as any)?.droneLatitude ?? null;
+  const targetLon: number | null = (latestRecord as any)?.estimatedTargetLocation?.targetLongitude ?? (latestRecord as any)?.targetLongitude ?? (latestRecord as any)?.droneLongitude ?? null;
+  const snapshotUrl: string | null = (latestRecord as any)?.photoDataUrl ?? (latestRecord as any)?.thumbnailDataUrl ?? null;
+
+  const calculateDistanceAndBearing = () => {
+    if (!runnerGps || targetLat === null || targetLon === null) return null;
+    const R = 6371000;
+    const dLat = ((targetLat - runnerGps.lat) * Math.PI) / 180;
+    const dLon = ((targetLon - runnerGps.lon) * Math.PI) / 180;
+    const lat1 = (runnerGps.lat * Math.PI) / 180;
+    const lat2 = (targetLat * Math.PI) / 180;
+
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    const distMeters = Math.round(R * c);
+
+    const y = Math.sin(dLon) * Math.cos(lat2);
+    const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+    const bearingDeg = Math.round(((Math.atan2(y, x) * 180) / Math.PI + 360) % 360);
+
+    return { distMeters, bearingDeg };
+  };
+  const intercept = calculateDistanceAndBearing();
 
   return (
     <div className={`p-3 sm:p-5 max-w-6xl mx-auto space-y-4 sm:space-y-5 font-mono ${className}`}>
@@ -367,8 +418,130 @@ export const RunnerDashboard: React.FC<RunnerDashboardProps> = ({
             )}
           </div>
         </div>
-
       </div>
+
+      {/* ============================================================ */}
+      {/* 2.5 TARGET INTERCEPT CARD (High-contrast real-time navigation) */}
+      {/* ============================================================ */}
+      {receivedCode && (
+        <div className="bg-gradient-to-r from-slate-900 via-emerald-950/60 to-slate-900 p-4 sm:p-6 rounded-2xl border-2 border-emerald-400 shadow-2xl space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-emerald-500/30 pb-3">
+            <div className="flex items-center space-x-2">
+              <span className="p-2 bg-emerald-500/20 rounded-xl text-emerald-400">
+                <Navigation className="w-5 h-5 animate-pulse" />
+              </span>
+              <div>
+                <h3 className="text-base sm:text-lg font-black text-white uppercase tracking-wider flex items-center gap-2">
+                  <span>TARGET INTERCEPT CARD</span>
+                  <span className="text-[10px] bg-emerald-500 text-slate-950 font-black px-2 py-0.5 rounded-full uppercase">
+                    LIVE
+                  </span>
+                </h3>
+                <p className="text-xs text-slate-400">Ground recovery navigation vector for Runner field unit</p>
+              </div>
+            </div>
+
+            {/* Decoded QR Code Payload Badge */}
+            <div className="bg-emerald-950 border-2 border-emerald-400 text-emerald-300 font-black text-xl sm:text-2xl px-4 py-1.5 rounded-xl text-center shadow-lg">
+              {receivedCode}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Snapshot Preview with Bounding Box Overlay */}
+            <div className="relative bg-slate-950 rounded-xl border border-slate-800 overflow-hidden min-h-[180px] flex items-center justify-center">
+              {snapshotUrl ? (
+                <div className="relative w-full h-full max-h-56">
+                  <img
+                    src={snapshotUrl}
+                    alt="Target Snapshot"
+                    className="w-full h-full object-contain rounded-lg"
+                  />
+                  <div className="absolute inset-4 border-2 border-emerald-400 pointer-events-none rounded animate-pulse" />
+                  <span className="absolute bottom-2 left-2 text-[10px] bg-black/80 px-2 py-0.5 rounded text-emerald-400 font-mono">
+                    Airborne Capture Snapshot
+                  </span>
+                </div>
+              ) : (
+                <div className="text-center p-6 text-slate-500 text-xs">
+                  <MapPin className="w-8 h-8 mx-auto text-slate-600 mb-2" />
+                  <span>No thumbnail attached to detection packet</span>
+                </div>
+              )}
+            </div>
+
+            {/* Target Coordinates & Navigation Actions */}
+            <div className="flex flex-col justify-between space-y-3">
+              <div className="bg-slate-950/90 p-3.5 rounded-xl border border-slate-800 space-y-2">
+                <div className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center justify-between">
+                  <span>EXACT TARGET GPS</span>
+                  {targetLat !== null && targetLon !== null && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (typeof navigator !== 'undefined' && navigator.clipboard) {
+                          navigator.clipboard.writeText(`${targetLat.toFixed(7)}, ${targetLon.toFixed(7)}`);
+                          setCopiedCoords(true);
+                          setTimeout(() => setCopiedCoords(false), 2000);
+                        }
+                      }}
+                      className="text-[11px] text-sky-400 hover:text-sky-300 flex items-center space-x-1 cursor-pointer font-bold"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>{copiedCoords ? 'COPIED!' : 'COPY'}</span>
+                    </button>
+                  )}
+                </div>
+
+                <div className="font-mono text-lg sm:text-xl font-black text-emerald-300">
+                  {targetLat !== null && targetLon !== null
+                    ? `${targetLat.toFixed(6)}°, ${targetLon.toFixed(6)}°`
+                    : 'Awaiting Target Georeference...'}
+                </div>
+
+                {/* Distance & Bearing Vector */}
+                {intercept ? (
+                  <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-800 text-xs">
+                    <div>
+                      <span className="text-slate-500 block text-[10px]">DISTANCE TO TARGET</span>
+                      <span className="text-sm font-bold text-white flex items-center gap-1">
+                        <MapPin className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>{intercept.distMeters} meters</span>
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block text-[10px]">BEARING / COMPASS</span>
+                      <span className="text-sm font-bold text-sky-400 flex items-center gap-1">
+                        <Compass className="w-3.5 h-3.5 text-sky-400" />
+                        <span>{intercept.bearingDeg}°</span>
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-slate-500 flex items-center space-x-1">
+                    <Compass className="w-3.5 h-3.5" />
+                    <span>Awaiting phone GPS fix for distance & bearing calculation...</span>
+                  </div>
+                )}
+              </div>
+
+              {/* One-Tap Deep Link to Google Maps Navigation */}
+              {targetLat !== null && targetLon !== null && (
+                <a
+                  href={`https://www.google.com/maps/dir/?api=1&destination=${targetLat},${targetLon}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black py-3 px-4 rounded-xl flex items-center justify-center space-x-2 shadow-lg hover:shadow-emerald-500/30 transition text-sm sm:text-base cursor-pointer"
+                >
+                  <Navigation className="w-5 h-5" />
+                  <span>OPEN IN GOOGLE MAPS NAVIGATION</span>
+                  <ExternalLink className="w-4 h-4 ml-1" />
+                </a>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 3. WIRELESS TELEMETRY & ACK PROTOCOL (Collapsible for zero clutter) */}
       <div className="bg-slate-900/60 rounded-xl border border-slate-800/80 overflow-hidden shadow-md">

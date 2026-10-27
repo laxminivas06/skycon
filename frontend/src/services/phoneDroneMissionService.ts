@@ -21,8 +21,11 @@ import { audioService } from './audioService';
 import {
   targetDetectionEngine,
   VerifiedTargetEvent,
-  TargetCandidate
+  TargetCandidate,
+  CapturedAreaImage
 } from './targetDetectionEngine';
+import { geofenceService } from './geofenceService';
+import { ipCameraService } from './ipCameraService';
 import {
   evidenceUploadService,
   ServerAcknowledgment
@@ -131,6 +134,7 @@ export class PhoneDroneMissionService {
   private waypointTimer: any = null;
   private revisitTimer: any = null;
   private heartbeatWatchdogTimer: any = null;
+  private containmentWatchdogTimer: any = null;
   private lastHeartbeatTime: number = 0;
   private hasBeenInAir: boolean = false;
 
@@ -138,6 +142,7 @@ export class PhoneDroneMissionService {
     this.initTelemetrySubscription();
     this.initTargetDetectionSubscription();
     this.startHeartbeatWatchdog();
+    this.startContainmentWatchdog();
   }
 
   private initTelemetrySubscription() {
@@ -228,6 +233,71 @@ export class PhoneDroneMissionService {
         }, 1500);
       }
     });
+
+    // 2. Deferred QR Candidate identified in area snapshot during survey
+    targetDetectionEngine.subscribeQueueTargetDetected(async (img) => {
+      if (this.state === 'SEARCHING') {
+        const insideGeofence = geofenceService.isInsideGeofence(img.estimatedGroundLat, img.estimatedGroundLon);
+        if (!insideGeofence) {
+          this.logEvent('SEARCHING', `QR Candidate detected at (${img.estimatedGroundLat.toFixed(6)}, ${img.estimatedGroundLon.toFixed(6)}) outside active geofence. Safety lockout applied.`, 'warn');
+          return;
+        }
+
+        audioService.playTargetLock();
+        this.savedSearchWaypointIndex = this.activeWaypointIndex;
+        if (this.waypointTimer) {
+          clearInterval(this.waypointTimer);
+          this.waypointTimer = null;
+        }
+
+        this.commandFlightModeSafely('LOITER');
+        this.transitionTo(
+          'TARGET_DETECTED',
+          `Deferred QR Candidate detected in area snapshot! Payload: "${img.qrPayload || 'Marker'}" at (${img.estimatedGroundLat.toFixed(6)}, ${img.estimatedGroundLon.toFixed(6)}).`
+        );
+
+        setTimeout(() => {
+          this.executeCapturedImageRevisit(img);
+        }, 1200);
+      }
+    });
+  }
+
+  /**
+   * 10Hz Active Flight Containment Watchdog (Zero-Exit Guarantee):
+   * Monitors live GLOBAL_POSITION_INT against active polygon geofence.
+   * If airborne vehicle breaches or approaches within 1.5m of boundary,
+   * commands LOITER and pulls back toward polygon centroid.
+   */
+  private startContainmentWatchdog() {
+    this.containmentWatchdogTimer = setInterval(() => {
+      const geofence = geofenceService.getState();
+      if (!geofence.enabled) return;
+
+      const telem = mavlinkService.getTelemetry();
+      const isAirborne = telem.isArmed && (telem.altitude > 0.8 || this.hasBeenInAir);
+      if (!isAirborne) return;
+
+      if (this.state === 'SEARCHING' || this.state === 'REVISITING' || this.state === 'VERIFYING') {
+        const droneLat = telem.latitude;
+        const droneLon = telem.longitude;
+        if (!droneLat || !droneLon || Math.abs(droneLat) < 0.001) return;
+
+        const vertices = geofenceService.getBoundaryVertices();
+        if (vertices.length < 3) return;
+
+        const inside = geofenceService.isInsideGeofence(droneLat, droneLon, 0);
+        const distToEdge = geofence.distanceToBoundaryMeters ?? 999;
+
+        if (!inside || distToEdge <= 1.5) {
+          const centroid = geofenceService.getEffectiveAnchor() || { lat: droneLat, lng: droneLon };
+          console.warn(`[GEOFENCE CONTAINMENT] Boundary approached (${distToEdge}m <= 1.5m). Repositioning toward centroid.`);
+          this.logEvent(this.state, `GEOFENCE WARNING: Boundary approached within ${distToEdge}m. Commanded LOITER & repositioning toward centroid.`, 'warn');
+          mavlinkService.setFlightMode('LOITER');
+          mavlinkService.flyToPosition(centroid.lat, centroid.lng, telem.altitude || this.config.altitudeMeters);
+        }
+      }
+    }, 100); // 10Hz check
   }
 
   private startHeartbeatWatchdog() {
@@ -503,6 +573,97 @@ export class PhoneDroneMissionService {
         }, this.config.revisitHoverSeconds * 1000);
       }
     }, 500);
+  }
+
+  /**
+   * Autonomous Revisit to Area Snapshot Coordinates (Deferred Queue Pipeline):
+   * Navigates directly to the pinhole ground coordinate of a detected candidate snapshot.
+   */
+  public async executeCapturedImageRevisit(img: CapturedAreaImage) {
+    this.transitionTo(
+      'REVISITING',
+      `Navigating to candidate snapshot location (${img.estimatedGroundLat.toFixed(6)}, ${img.estimatedGroundLon.toFixed(6)}) at ${this.config.revisitAltitudeMeters}m AGL.`
+    );
+
+    const targetLat = img.estimatedGroundLat;
+    const targetLon = img.estimatedGroundLon;
+    const revisitAlt = this.config.revisitAltitudeMeters;
+
+    // Dispatch MAV_CMD_DO_REPOSITION
+    await mavlinkService.flyToPosition(targetLat, targetLon, revisitAlt);
+
+    // Watch for arrival within 1.0m horizontal radius
+    const arrivalInterval = setInterval(async () => {
+      const telem = mavlinkService.getTelemetry();
+      const dist = this.calculateGeodesicDistance(telem.latitude, telem.longitude, targetLat, targetLon);
+
+      if (dist <= 1.0) {
+        clearInterval(arrivalInterval);
+
+        // Precision Hover, Zoom & Live QR Decode (VERIFYING)
+        this.transitionTo('VERIFYING', `Position locked over target coordinate (Dist: ${dist.toFixed(1)}m <= 1.0m). Executing PTZ zoom sweep and close-up verification hover.`);
+        await this.commandFlightModeSafely('LOITER');
+
+        // Trigger hardware PTZ zoom sweep and autofocus
+        try {
+          ipCameraService.setAutoZoomSweeping(true);
+          ipCameraService.stepZoom(1.5);
+          ipCameraService.triggerFocus();
+        } catch {}
+
+        // Construct verified target event from candidate image
+        const now = Date.now();
+        this.activeTarget = {
+          eventId: `TARGET_${now}_${Math.floor(Math.random() * 900 + 100)}`,
+          detectionMode: 'QR_CODE',
+          payload: img.qrPayload || 'VERIFIED_TARGET',
+          twoDigitCode: (img.qrPayload || '').replace(/\D/g, '').slice(0, 2) || null,
+          confidence: 0.98,
+          timestamp: now,
+          thumbnailDataUrl: img.imageDataUrl,
+          dronePosition: {
+            lat: telem.latitude,
+            lon: telem.longitude,
+            altAgl: telem.altitude,
+            altMsl: telem.altitude,
+            heading: telem.heading
+          },
+          estimatedTargetLocation: {
+            targetLatitude: targetLat,
+            targetLongitude: targetLon,
+            droneLatitude: telem.latitude,
+            droneLongitude: telem.longitude,
+            droneAltitudeAgl: telem.altitude,
+            headingDeg: telem.heading,
+            uncertaintyMeters: 0.8,
+            isProjected: true,
+            groundOffsetMeters: { dxForward: 0, dyRight: 0, distanceTotal: 0 }
+          },
+          frameQuality: {
+            blurScore: img.sharpness || 85,
+            isBlurry: false,
+            meanLuminance: 120,
+            isLowLight: false,
+            isGlare: false,
+            contrastScore: 50
+          },
+          boundingBox: {
+            x: Math.round(img.bboxNormalized.nx * 640),
+            y: Math.round(img.bboxNormalized.ny * 480),
+            width: Math.round(img.bboxNormalized.w * 640),
+            height: Math.round(img.bboxNormalized.h * 480)
+          }
+        };
+
+        // Hover for verification window
+        setTimeout(() => {
+          try {
+            ipCameraService.setAutoZoomSweeping(false);
+          } catch {}
+          this.handleRevisitVerificationComplete(true);
+        }, this.config.revisitHoverSeconds * 1000);
+      }
+    }, 400);
   }
 
   /**

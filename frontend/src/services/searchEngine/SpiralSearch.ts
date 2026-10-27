@@ -83,17 +83,22 @@ export class SpiralSearch extends BaseSearchAlgorithm {
       currentTheta += angularStep;
     }
 
+    const effectiveBoundary = coords && coords.length >= 3 ? coords : undefined;
+    const clampedWaypoints = effectiveBoundary
+      ? BaseSearchAlgorithm.clampWaypointsToPolygon(waypoints, effectiveBoundary, 2.0)
+      : waypoints;
+
     // Calculate total path distance
-    for (let i = 0; i < waypoints.length - 1; i++) {
-      totalDist += BaseSearchAlgorithm.getDistanceMeters(waypoints[i], waypoints[i + 1]);
+    for (let i = 0; i < clampedWaypoints.length - 1; i++) {
+      totalDist += BaseSearchAlgorithm.getDistanceMeters(clampedWaypoints[i], clampedWaypoints[i + 1]);
     }
 
-    const estimatedTimeSeconds = totalDist / Math.max(1.0, flightSpeedMs) + waypoints.length * 0.8;
+    const estimatedTimeSeconds = totalDist / Math.max(1.0, flightSpeedMs) + clampedWaypoints.length * 0.8;
     const boundaryArea = Math.PI * maxRadius * maxRadius;
 
     return {
       algorithm: 'SPIRAL',
-      waypoints,
+      waypoints: clampedWaypoints,
       totalDistanceMeters: Math.round(totalDist),
       estimatedTimeSeconds: Math.round(estimatedTimeSeconds),
       laneCount: currentLane,

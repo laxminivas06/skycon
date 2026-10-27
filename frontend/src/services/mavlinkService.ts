@@ -2396,6 +2396,24 @@ class MAVLinkService {
       return false;
     }
 
+    // Strict Hardware + Software Geofence Pre-Arm Interlock
+    if (!force) {
+      try {
+        const { geofenceService } = await import('./geofenceService');
+        const isSimUnitMock = !this.connectionState.isRealHardware && Math.abs(this.telemetry.latitude) <= 0.001;
+        if (!isSimUnitMock && geofenceService.getState().enabled) {
+          const check = geofenceService.canArmVehicle(this.telemetry.latitude, this.telemetry.longitude);
+          if (!check.canArm) {
+            const reason = check.reason || 'ARM BLOCKED: Drone is outside active Geofence boundary';
+            console.warn(`[GEOFENCE INTERLOCK] ${reason}`);
+            this.logDiagnostic('MAVLINK', reason, 'error');
+            this.addStatusMessage('ERROR', 6, reason);
+            return false;
+          }
+        }
+      } catch (err) {}
+    }
+
     // Reset prior rejection state on fresh arm attempt
     this.connectionState.preArmFailReason = undefined;
     this.connectionState.lastArmCommandAck = undefined;
@@ -2649,6 +2667,23 @@ class MAVLinkService {
       this.logDiagnostic('ERROR', 'Cannot takeoff: MAVLink not connected', 'error');
       return false;
     }
+
+    // Geofence pre-flight interlock check
+    try {
+      const { geofenceService } = await import('./geofenceService');
+      const isSimUnitMock = !this.connectionState.isRealHardware && Math.abs(this.telemetry.latitude) <= 0.001;
+      if (!isSimUnitMock && geofenceService.getState().enabled) {
+        const check = geofenceService.canArmVehicle(this.telemetry.latitude, this.telemetry.longitude);
+        if (!check.canArm) {
+          const reason = check.reason || 'TAKEOFF BLOCKED: Drone is outside active Geofence boundary';
+          console.warn(`[GEOFENCE INTERLOCK] ${reason}`);
+          this.logDiagnostic('MAVLINK', reason, 'error');
+          this.addStatusMessage('ERROR', 6, reason);
+          return false;
+        }
+      }
+    } catch (e) {}
+
     this.telemetry.targetAltitude = targetAltMeters;
     this.addStatusMessage('NOTICE', 5, `Sending Takeoff Command to ${targetAltMeters}m...`);
     if (this.connectionState.isRealHardware || isConnected) {
@@ -2667,6 +2702,40 @@ class MAVLinkService {
       this.notifyTelemetry();
       return true;
     }
+  }
+
+  public async sendFenceEnable(enabled: boolean): Promise<{ success: boolean }> {
+    const isConnected = this.connectionState.isConnected || this.connectionState.isUsbConnected;
+    this.logDiagnostic('MAVLINK', `Sending MAV_CMD_DO_FENCE_ENABLE (1603) param1=${enabled ? 1 : 0}`, 'info');
+    if (this.connectionState.isRealHardware && isConnected) {
+      const ok = await this.sendMavlinkCommandLong(1603 /* MAV_CMD_DO_FENCE_ENABLE */, enabled ? 1.0 : 0.0);
+      return { success: ok };
+    }
+    return { success: true };
+  }
+
+  public async uploadFencePolygon(vertices: Array<{ lat: number; lng?: number; lon?: number }>): Promise<{ success: boolean; count: number }> {
+    const isConnected = this.connectionState.isConnected || this.connectionState.isUsbConnected;
+    if (!vertices || vertices.length < 3) return { success: false, count: 0 };
+    this.logDiagnostic('MAVLINK', `Uploading fence polygon (${vertices.length} vertices) to Pixhawk via MAVLink`, 'info');
+    if (this.connectionState.isRealHardware && isConnected) {
+      for (let i = 0; i < vertices.length; i++) {
+        const v = vertices[i];
+        const lon = v.lng ?? (v as any).lon ?? 0;
+        await this.sendMavlinkCommandInt(
+          5001 /* MAV_CMD_NAV_FENCE_POLYGON_VERTEX_INCLUSION */,
+          vertices.length,
+          i,
+          0,
+          0,
+          v.lat,
+          lon,
+          0,
+          5 /* MAV_FRAME_GLOBAL_INT */
+        );
+      }
+    }
+    return { success: true, count: vertices.length };
   }
 
   /**

@@ -12,6 +12,7 @@ import { LatLngPoint } from '../types/mission';
 export type GeofenceShape = 'ARENA_RECTANGLE' | 'CIRCLE' | 'CUSTOM_POLYGON';
 export type GeofenceBreachAction = 'RTL' | 'LOITER' | 'LAND' | 'POSHOLD';
 export type GeofenceAnchor = 'HOME' | 'DRONE' | 'CUSTOM';
+export type GeofenceLockStatus = 'ACTIVE_ARMED_LOCKED' | 'BREACHED' | 'BYPASSED_OFF';
 
 export interface GeofenceConfig {
   enabled: boolean;
@@ -34,6 +35,7 @@ export interface GeofenceState extends GeofenceConfig {
   currentAltitudeMeters: number;
   lastBreachTimestamp: number | null;
   effectiveAnchor: LatLngPoint | null;
+  geofenceStatus: GeofenceLockStatus;
 }
 
 const STORAGE_KEY = 'cade_geofence_config_v2';
@@ -52,6 +54,91 @@ const DEFAULT_CONFIG: GeofenceConfig = {
   customAnchor: null,
   customVertices: [],
 };
+
+/**
+ * Deterministic even-odd ray-casting algorithm to test whether a GPS point
+ * is strictly inside an arbitrary closed polygon.
+ */
+export function isPointInsideGeofence(lat: number, lon: number, polygon: LatLngPoint[]): boolean {
+  if (!polygon || polygon.length < 3) return true;
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].lat;
+    const yi = polygon[i].lng;
+    const xj = polygon[j].lat;
+    const yj = polygon[j].lng;
+
+    const intersect = ((yi > lon) !== (yj > lon)) &&
+      (lat < ((xj - xi) * (lon - yi)) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * Calculates the geometric centroid (average lat/lng) of a polygon.
+ */
+export function getPolygonCentroid(polygon: LatLngPoint[]): LatLngPoint {
+  if (!polygon || polygon.length === 0) return { lat: 12.9715987, lng: 77.5945627 };
+  let sumLat = 0;
+  let sumLon = 0;
+  for (const pt of polygon) {
+    sumLat += pt.lat;
+    sumLon += pt.lng;
+  }
+  return {
+    lat: sumLat / polygon.length,
+    lng: sumLon / polygon.length
+  };
+}
+
+/**
+ * Clamps a waypoint inside a polygon by vectoring inward toward the polygon centroid
+ * by a specified margin in meters if the point is outside or too close to the perimeter.
+ */
+export function clampWaypointToGeofence(wp: LatLngPoint, polygon: LatLngPoint[], marginMeters: number = 2.0): LatLngPoint {
+  if (!polygon || polygon.length < 3) return wp;
+  const centroid = getPolygonCentroid(polygon);
+  const inside = isPointInsideGeofence(wp.lat, wp.lng, polygon);
+
+  let point = { ...wp };
+
+  if (!inside) {
+    // Binary search towards centroid to find boundary intersection
+    let low = 0.0;
+    let high = 1.0;
+    let clamped = { ...centroid };
+
+    for (let iter = 0; iter < 16; iter++) {
+      const mid = (low + high) / 2;
+      const testLat = wp.lat + (centroid.lat - wp.lat) * mid;
+      const testLng = wp.lng + (centroid.lng - wp.lng) * mid;
+      if (isPointInsideGeofence(testLat, testLng, polygon)) {
+        clamped = { lat: testLat, lng: testLng };
+        high = mid;
+      } else {
+        low = mid;
+      }
+    }
+    point = clamped;
+  }
+
+  // Apply safety buffer inward toward centroid
+  if (marginMeters > 0) {
+    const distToCenter = computeHaversine(point.lat, point.lng, centroid.lat, centroid.lng);
+    if (distToCenter > marginMeters) {
+      const ratio = Math.min(1.0, marginMeters / distToCenter);
+      point = {
+        lat: point.lat + (centroid.lat - point.lat) * ratio,
+        lng: point.lng + (centroid.lng - point.lng) * ratio,
+      };
+    } else {
+      point = { ...centroid };
+    }
+  }
+
+  return point;
+}
 
 // Geodesic destination helper using WGS-84 Earth radius
 function computeDestination(lat: number, lon: number, distanceMeters: number, bearingDeg: number): LatLngPoint {
@@ -127,6 +214,7 @@ class GeofenceService {
       currentAltitudeMeters: 0,
       lastBreachTimestamp: null,
       effectiveAnchor: null,
+      geofenceStatus: this.config.enabled ? 'ACTIVE_ARMED_LOCKED' : 'BYPASSED_OFF',
     };
     this.initTelemetry();
   }
@@ -179,6 +267,10 @@ class GeofenceService {
    * Generates polygon vertices for map rendering and breach checks
    */
   public getBoundaryVertices(): LatLngPoint[] {
+    if (this.config.shape === 'CUSTOM_POLYGON' && this.config.customVertices && this.config.customVertices.length >= 3) {
+      return this.config.customVertices;
+    }
+
     const anchor = this.getEffectiveAnchor();
     if (!anchor) return [];
 
@@ -204,10 +296,6 @@ class GeofenceService {
         vertices.push(computeDestination(anchor.lat, anchor.lng, radius, bearing));
       }
       return vertices;
-    }
-
-    if (this.config.shape === 'CUSTOM_POLYGON' && this.config.customVertices.length >= 3) {
-      return this.config.customVertices;
     }
 
     return [];
@@ -396,6 +484,12 @@ class GeofenceService {
     }
   }
 
+  private computeLockStatus(): GeofenceLockStatus {
+    if (!this.config.enabled) return 'BYPASSED_OFF';
+    if (this.state.isBreached) return 'BREACHED';
+    return 'ACTIVE_ARMED_LOCKED';
+  }
+
   public setEnabled(enabled: boolean) {
     this.config.enabled = enabled;
     this.state.enabled = enabled;
@@ -409,6 +503,31 @@ class GeofenceService {
     }
     this.persistConfig();
     this.notify();
+    try {
+      (mavlinkService as any).sendFenceEnable?.(enabled);
+    } catch {}
+  }
+
+  public setCustomPolygon(vertices: LatLngPoint[]) {
+    this.config.shape = 'CUSTOM_POLYGON';
+    this.config.customVertices = [...vertices];
+    this.state.shape = 'CUSTOM_POLYGON';
+    this.state.customVertices = [...vertices];
+    if (vertices.length >= 3) {
+      const centroid = getPolygonCentroid(vertices);
+      this.config.customAnchor = centroid;
+      this.state.customAnchor = centroid;
+      this.state.effectiveAnchor = centroid;
+    }
+    this.persistConfig();
+    this.notify();
+    try {
+      (mavlinkService as any).uploadFencePolygon?.(vertices);
+    } catch {}
+  }
+
+  public setPolygon(vertices: LatLngPoint[]) {
+    this.setCustomPolygon(vertices);
   }
 
   public updateConfig(newConfig: Partial<GeofenceConfig>) {
@@ -426,6 +545,7 @@ class GeofenceService {
       isBreached: false,
       breachReason: null,
       distanceToBoundaryMeters: null,
+      geofenceStatus: 'ACTIVE_ARMED_LOCKED'
     };
     this.autoFailsafeTriggered = false;
     this.consecutiveBreachCount = 0;
@@ -488,41 +608,51 @@ class GeofenceService {
     } else {
       const vertices = this.getBoundaryVertices();
       if (vertices.length < 3) return true;
-      return isPointInPolygon({ lat, lng }, vertices);
+      return isPointInsideGeofence(lat, lng, vertices);
     }
   }
 
   /**
-   * Checks whether the vehicle is permitted to arm under geofence rules.
-   * Applies pre-arm center proximity and a 3.0m ground GPS noise buffer.
+   * Strict Arming Interlock:
+   * When geofenceEnabled === true, the drone MUST NOT be allowed to arm
+   * if its current live GPS position is outside the drawn polygon or if 3D GPS fix < 6 sats.
    */
   public canArmVehicle(lat?: number, lng?: number): { canArm: boolean; reason?: string } {
     if (!this.config.enabled) return { canArm: true };
-    const droneLat = lat ?? mavlinkService.getTelemetry().latitude;
-    const droneLng = lng ?? mavlinkService.getTelemetry().longitude;
+    const telem = mavlinkService.getTelemetry();
+    const droneLat = lat ?? telem.latitude;
+    const droneLng = lng ?? telem.longitude;
+
+    // 1. Check satellite count and 3D fix
+    const sats = telem.gps?.satellites ?? (telem as any).satellitesVisible ?? (telem as any).satellites ?? 0;
+    const hasFix = Boolean(telem.gps?.isLocked || (telem as any).isGpsValid || sats >= 6);
+    if (!hasFix || sats < 6) {
+      return {
+        canArm: false,
+        reason: `ARM BLOCKED: GPS Fix insufficient (${sats} sats < 6) to verify Geofence containment.`
+      };
+    }
+
+    // 2. Check position inside boundary
     if (droneLat && droneLng && Math.abs(droneLat) > 0.001) {
-      const anchor = this.getEffectiveAnchor();
-      if (!anchor) return { canArm: true };
-
-      // Pre-arm check: If within 5 meters of anchor point (takeoff position), always allow arming
-      const distToAnchor = computeHaversine(anchor.lat, anchor.lng, droneLat, droneLng);
-      if (distToAnchor < 5.0) {
-        return { canArm: true };
-      }
-
-      // 3.0-meter ground GPS tolerance buffer ensures noise on the launch pad never blocks arming
-      const inside = this.isInsideGeofence(droneLat, droneLng, 3.0);
-      if (!inside) {
-        return {
-          canArm: false,
-          reason: `Aircraft is OUTSIDE active Geofence boundary (${distToAnchor.toFixed(0)}m from center). Position geofence over current area to arm.`
-        };
+      const vertices = this.getBoundaryVertices();
+      if (vertices.length >= 3) {
+        const inside = isPointInsideGeofence(droneLat, droneLng, vertices);
+        if (!inside) {
+          const centroid = getPolygonCentroid(vertices);
+          const distToCenter = computeHaversine(centroid.lat, centroid.lng, droneLat, droneLng);
+          return {
+            canArm: false,
+            reason: `ARM BLOCKED: Drone is outside active Geofence boundary (${distToCenter.toFixed(0)}m from centroid).`
+          };
+        }
       }
     }
     return { canArm: true };
   }
 
   public getState(): GeofenceState {
+    this.state.geofenceStatus = this.computeLockStatus();
     return { ...this.state };
   }
 
@@ -533,6 +663,7 @@ class GeofenceService {
   }
 
   private notify() {
+    this.state.geofenceStatus = this.computeLockStatus();
     const s = this.getState();
     this.listeners.forEach((fn) => fn(s));
   }

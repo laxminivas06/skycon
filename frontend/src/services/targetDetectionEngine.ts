@@ -84,8 +84,26 @@ export interface VerifiedTargetEvent {
   boundingBox: { x: number; y: number; width: number; height: number };
 }
 
-type TargetListener = (event: VerifiedTargetEvent) => void;
-type CandidateListener = (candidate: TargetCandidate | null) => void;
+export interface CapturedAreaImage {
+  id: string;
+  timestamp: number;
+  imageDataUrl: string;
+  droneLat: number;
+  droneLon: number;
+  altitudeAgl: number;
+  headingDeg: number;
+  bboxNormalized: { nx: number; ny: number; w: number; h: number };
+  estimatedGroundLat: number; // Computed via Pinhole Ray-Casting Engine
+  estimatedGroundLon: number;
+  scanStatus: 'PENDING_QR_SCAN' | 'QR_DETECTED' | 'NO_QR';
+  qrPayload?: string;
+  sharpness?: number;
+}
+
+export type TargetListener = (event: VerifiedTargetEvent) => void;
+export type CandidateListener = (candidate: TargetCandidate | null) => void;
+export type CapturedImagesListener = (images: CapturedAreaImage[]) => void;
+export type QueueTargetListener = (image: CapturedAreaImage) => void;
 
 // Lazy-load zxing-wasm for barcode scanning
 let zxingBarcodeReader: any = null;
@@ -119,6 +137,10 @@ export class TargetDetectionEngine {
 
   private targetListeners: Set<TargetListener> = new Set();
   private candidateListeners: Set<CandidateListener> = new Set();
+  private capturedImages: CapturedAreaImage[] = [];
+  private capturedImagesListeners: Set<CapturedImagesListener> = new Set();
+  private queueTargetListeners: Set<QueueTargetListener> = new Set();
+  private isBatchScanning: boolean = false;
 
   private activeCandidate: TargetCandidate | null = null;
   private recentDetections: Map<string, number> = new Map(); // payload -> timestamp
@@ -165,6 +187,309 @@ export class TargetDetectionEngine {
     this.candidateListeners.add(fn);
     fn(this.activeCandidate);
     return () => this.candidateListeners.delete(fn);
+  }
+
+  public getCapturedImages(): CapturedAreaImage[] {
+    return [...this.capturedImages];
+  }
+
+  public clearCapturedImages(): void {
+    this.capturedImages = [];
+    this.notifyCapturedImages();
+  }
+
+  public subscribeCapturedImages(fn: CapturedImagesListener): () => void {
+    this.capturedImagesListeners.add(fn);
+    fn(this.getCapturedImages());
+    return () => this.capturedImagesListeners.delete(fn);
+  }
+
+  public subscribeQueueTargetDetected(fn: QueueTargetListener): () => void {
+    this.queueTargetListeners.add(fn);
+    return () => this.queueTargetListeners.delete(fn);
+  }
+
+  private notifyCapturedImages() {
+    const list = this.getCapturedImages();
+    this.capturedImagesListeners.forEach((fn) => fn(list));
+  }
+
+  public haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const R = 6371000;
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLon = ((lon2 - lon1) * Math.PI) / 180;
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return +(R * c).toFixed(2);
+  }
+
+  /**
+   * Detects ground salient objects, high contrast contours, or square marker candidates.
+   * Returns normalized bounding box { nx, ny, w, h } or null.
+   */
+  public detectSalientGroundContour(imageData: ImageData, quality: FrameQualityMetrics): { nx: number; ny: number; w: number; h: number } | null {
+    if (quality.blurScore < this.blurThreshold) {
+      return null;
+    }
+
+    const { width, height, data } = imageData;
+    const step = 4;
+    const threshold = quality.meanLuminance * 0.65; // High contrast dark contour on lighter ground
+
+    let minX = width, maxX = 0, minY = height, maxY = 0;
+    let hitCount = 0;
+
+    for (let y = step * 2; y < height - step * 2; y += step) {
+      const rowOffset = y * width;
+      for (let x = step * 2; x < width - step * 2; x += step) {
+        const idx = (rowOffset + x) * 4;
+        const lum = (data[idx] * 299 + data[idx + 1] * 587 + data[idx + 2] * 114) / 1000;
+        if (lum < threshold) {
+          hitCount++;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+
+    if (hitCount >= 20 && maxX > minX + 20 && maxY > minY + 20) {
+      const boxW = maxX - minX;
+      const boxH = maxY - minY;
+      const areaRatio = (boxW * boxH) / (width * height);
+      if (areaRatio >= 0.004 && areaRatio <= 0.65) {
+        return {
+          nx: +(minX / width).toFixed(4),
+          ny: +(minY / height).toFixed(4),
+          w: +(boxW / width).toFixed(4),
+          h: +(boxH / height).toFixed(4)
+        };
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Captures a high-resolution still image (image/jpeg, quality 0.92) from the IP camera canvas,
+   * calculates ground coordinates via Pinhole Ray-Casting Engine, and applies 1.5m spatial deduplication.
+   */
+  public captureAreaSnapshot(params: {
+    canvas: HTMLCanvasElement;
+    telemetry: {
+      lat: number;
+      lon: number;
+      altAgl: number;
+      heading: number;
+      pitch?: number;
+      roll?: number;
+      hdop?: number;
+    };
+    bboxNormalized: { nx: number; ny: number; w: number; h: number };
+    sharpness: number;
+  }): CapturedAreaImage | null {
+    const { canvas, telemetry, bboxNormalized, sharpness } = params;
+
+    // Calculate pixel center for pinhole ray-casting
+    const pixelCenter = {
+      x: Math.round((bboxNormalized.nx + bboxNormalized.w / 2) * canvas.width),
+      y: Math.round((bboxNormalized.ny + bboxNormalized.h / 2) * canvas.height)
+    };
+
+    const estimatedLocation = this.estimateTargetGroundLocation({
+      droneLat: telemetry.lat,
+      droneLon: telemetry.lon,
+      droneAltAgl: telemetry.altAgl,
+      headingDeg: telemetry.heading,
+      pitchDeg: telemetry.pitch,
+      rollDeg: telemetry.roll,
+      hdop: telemetry.hdop,
+      pixelCenter,
+      frameSize: { width: canvas.width, height: canvas.height }
+    });
+
+    const groundLat = estimatedLocation.targetLatitude;
+    const groundLon = estimatedLocation.targetLongitude;
+
+    // Spatial deduplication: avoid taking redundant photos within 1.5m of an already-captured
+    // ground coordinate unless sharpness improves by > 25%
+    for (const existing of this.capturedImages) {
+      const dist = this.haversineMeters(groundLat, groundLon, existing.estimatedGroundLat, existing.estimatedGroundLon);
+      if (dist < 1.5) {
+        const existingSharpness = existing.sharpness || 0;
+        if (sharpness <= existingSharpness * 1.25) {
+          // Redundant: existing snapshot is within 1.5m and new frame does not improve sharpness by >25%
+          return null;
+        }
+      }
+    }
+
+    let imageDataUrl = '';
+    try {
+      imageDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+    } catch (err) {
+      console.warn('[TARGET_DETECTION] Canvas snapshot fallback:', err);
+      return null;
+    }
+
+    const capturedImage: CapturedAreaImage = {
+      id: `IMG_${Date.now()}_${Math.floor(Math.random() * 900 + 100)}`,
+      timestamp: Date.now(),
+      imageDataUrl,
+      droneLat: telemetry.lat,
+      droneLon: telemetry.lon,
+      altitudeAgl: telemetry.altAgl,
+      headingDeg: telemetry.heading,
+      bboxNormalized,
+      estimatedGroundLat: groundLat,
+      estimatedGroundLon: groundLon,
+      scanStatus: 'PENDING_QR_SCAN',
+      sharpness
+    };
+
+    this.capturedImages.unshift(capturedImage);
+    if (this.capturedImages.length > 50) {
+      this.capturedImages.pop();
+    }
+    this.notifyCapturedImages();
+
+    // Trigger background batch scan asynchronously
+    this.scanCapturedImagesForQR().catch(() => {});
+
+    return capturedImage;
+  }
+
+  /**
+   * Asynchronously scans queued captured images for QR codes or markers.
+   * Processes every image with scanStatus === 'PENDING_QR_SCAN'.
+   * Applies multi-scale crop + contrast enhancement + jsQR / ZXing.
+   */
+  public async scanCapturedImagesForQR(): Promise<CapturedAreaImage | null> {
+    let waitCount = 0;
+    while (this.isBatchScanning && waitCount < 10) {
+      await new Promise((r) => setTimeout(r, 50));
+      waitCount++;
+    }
+    if (this.isBatchScanning) return null;
+    this.isBatchScanning = true;
+
+    try {
+      const pending = this.capturedImages.filter((img) => img.scanStatus === 'PENDING_QR_SCAN');
+      for (const img of pending) {
+        let detectedPayload: string | null = null;
+
+        // If in browser, load the image onto an offscreen canvas
+        if (typeof document !== 'undefined' && typeof Image !== 'undefined' && img.imageDataUrl) {
+          try {
+            const tempImg = new Image();
+            tempImg.src = img.imageDataUrl;
+            await new Promise((resolve) => {
+              if (tempImg.complete) return resolve(true);
+              tempImg.onload = () => resolve(true);
+              tempImg.onerror = () => resolve(false);
+              setTimeout(() => resolve(false), 2000);
+            });
+
+            if (tempImg.naturalWidth > 0 && tempImg.naturalHeight > 0) {
+              const canvas = document.createElement('canvas');
+              const W = tempImg.naturalWidth;
+              const H = tempImg.naturalHeight;
+              canvas.width = W;
+              canvas.height = H;
+              const ctx = canvas.getContext('2d', { willReadFrequently: true });
+              if (ctx) {
+                ctx.drawImage(tempImg, 0, 0, W, H);
+                const fullImgData = ctx.getImageData(0, 0, W, H);
+
+                // Pass 1: Full-frame jsQR
+                const fullQr = jsQR(fullImgData.data, W, H, { inversionAttempts: 'attemptBoth' });
+                if (fullQr && fullQr.data && fullQr.data.trim()) {
+                  detectedPayload = fullQr.data.trim();
+                }
+
+                // Pass 2: Multi-scale ROI crop around bboxNormalized with contrast enhancement
+                if (!detectedPayload && img.bboxNormalized) {
+                  const bx = Math.max(0, Math.floor((img.bboxNormalized.nx - 0.05) * W));
+                  const by = Math.max(0, Math.floor((img.bboxNormalized.ny - 0.05) * H));
+                  const bw = Math.min(W - bx, Math.ceil((img.bboxNormalized.w + 0.1) * W));
+                  const bh = Math.min(H - by, Math.ceil((img.bboxNormalized.h + 0.1) * H));
+
+                  if (bw > 20 && bh > 20) {
+                    const roiCanvas = document.createElement('canvas');
+                    roiCanvas.width = bw;
+                    roiCanvas.height = bh;
+                    const roiCtx = roiCanvas.getContext('2d', { willReadFrequently: true });
+                    if (roiCtx) {
+                      roiCtx.drawImage(canvas, bx, by, bw, bh, 0, 0, bw, bh);
+                      const roiData = roiCtx.getImageData(0, 0, bw, bh);
+
+                      // Enhance contrast on ROI (simple adaptive stretch)
+                      const d = roiData.data;
+                      let minVal = 255, maxVal = 0;
+                      for (let i = 0; i < d.length; i += 4) {
+                        const lum = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000;
+                        if (lum < minVal) minVal = lum;
+                        if (lum > maxVal) maxVal = lum;
+                      }
+                      if (maxVal > minVal + 10) {
+                        const range = maxVal - minVal;
+                        for (let i = 0; i < d.length; i += 4) {
+                          d[i] = Math.min(255, Math.max(0, ((d[i] - minVal) * 255) / range));
+                          d[i + 1] = Math.min(255, Math.max(0, ((d[i + 1] - minVal) * 255) / range));
+                          d[i + 2] = Math.min(255, Math.max(0, ((d[i + 2] - minVal) * 255) / range));
+                        }
+                      }
+
+                      const roiQr = jsQR(roiData.data, bw, bh, { inversionAttempts: 'attemptBoth' });
+                      if (roiQr && roiQr.data && roiQr.data.trim()) {
+                        detectedPayload = roiQr.data.trim();
+                      }
+                    }
+                  }
+                }
+
+                // Pass 3: Fallback zxing-wasm decode
+                if (!detectedPayload) {
+                  const zxing = await getZxingBarcodeReader();
+                  if (zxing) {
+                    const zRes = await zxing(fullImgData, { formats: ['QRCode'] });
+                    if (zRes && zRes.length > 0 && zRes[0].text) {
+                      detectedPayload = zRes[0].text.trim();
+                    }
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            console.warn('[TARGET_DETECTION] scanCapturedImagesForQR error on image:', e);
+          }
+        }
+
+        if (!detectedPayload && img.qrPayload) {
+          detectedPayload = img.qrPayload;
+        }
+
+        if (detectedPayload) {
+          img.scanStatus = 'QR_DETECTED';
+          img.qrPayload = detectedPayload;
+          this.notifyCapturedImages();
+
+          // Notify queue listeners
+          this.queueTargetListeners.forEach((fn) => fn(img));
+          return img;
+        } else {
+          img.scanStatus = 'NO_QR';
+        }
+      }
+      this.notifyCapturedImages();
+    } finally {
+      this.isBatchScanning = false;
+    }
+    return null;
   }
 
   /**

@@ -10,8 +10,11 @@ import {
   TargetDetectionMode,
   TargetCandidate,
   VerifiedTargetEvent,
-  FrameQualityMetrics
+  FrameQualityMetrics,
+  CapturedAreaImage
 } from '../../services/targetDetectionEngine';
+import { geofenceService, GeofenceState } from '../../services/geofenceService';
+import { ipCameraService, StreamHealthMetrics } from '../../services/ipCameraService';
 import {
   phoneDeviceService,
   ScreenOrientationMode,
@@ -101,6 +104,18 @@ export const PhoneDroneDashboard: React.FC = () => {
     evidenceUploadService.getSyncStatus()
   );
 
+  // Geofence & Arm Lockout State
+  const [geofenceState, setGeofenceState] = useState<GeofenceState>(() => geofenceService.getState());
+
+  // Captured Area Image Gallery & Scanner Queue
+  const [capturedImages, setCapturedImages] = useState<CapturedAreaImage[]>(() =>
+    targetDetectionEngine.getCapturedImages()
+  );
+  const [streamHealth, setStreamHealth] = useState<StreamHealthMetrics>(() =>
+    ipCameraService.getStreamHealth()
+  );
+  const [isScanningSnapshots, setIsScanningSnapshots] = useState<boolean>(false);
+
   // Modals & Confirmation Dialogs
   const [confirmDialog, setConfirmDialog] = useState<{
     isOpen: boolean;
@@ -167,6 +182,18 @@ export const PhoneDroneDashboard: React.FC = () => {
     return () => { unsubSync(); };
   }, []);
 
+  // 4b. Subscribe to Geofence, Captured Area Images & Stream Health
+  useEffect(() => {
+    const unsubGeofence = geofenceService.subscribe((s) => setGeofenceState(s));
+    const unsubImages = targetDetectionEngine.subscribeCapturedImages((imgs) => setCapturedImages(imgs));
+    const unsubHealth = ipCameraService.subscribeStreamHealth((sh) => setStreamHealth(sh));
+    return () => {
+      unsubGeofence();
+      unsubImages();
+      unsubHealth();
+    };
+  }, []);
+
   // 5. Initialize Camera & Continuous Frame Processing Loop
   useEffect(() => {
     let isMounted = true;
@@ -199,7 +226,10 @@ export const PhoneDroneDashboard: React.FC = () => {
         canvas.height = video.videoHeight || 480;
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         if (ctx) {
+          const tFrameStart = performance.now();
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const frameLatency = Math.round(performance.now() - tFrameStart);
+          ipCameraService.recordFrameRendered(frameLatency);
 
           const telem = mavlinkService.getTelemetry();
           const result = await targetDetectionEngine.processFrame(canvas, {
@@ -215,6 +245,32 @@ export const PhoneDroneDashboard: React.FC = () => {
 
           setFrameQuality(result.quality);
           phoneDeviceService.updateLuminanceForAutoTorch(result.quality.meanLuminance);
+
+          // Real-time Ground Anomaly / Object Detection & Whole-Area Snapshot Capture during SEARCHING
+          const currMission = phoneDroneMissionService.getProgress();
+          if (currMission.state === 'SEARCHING' && result.quality.blurScore >= 60) {
+            const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const contour = targetDetectionEngine.detectSalientGroundContour(imgData, result.quality);
+            if (contour) {
+              const snap = targetDetectionEngine.captureAreaSnapshot({
+                canvas,
+                telemetry: {
+                  lat: telem.latitude,
+                  lon: telem.longitude,
+                  altAgl: telem.altitude,
+                  heading: telem.heading,
+                  pitch: telem.pitch,
+                  roll: telem.roll,
+                  hdop: telem.gps.hdop
+                },
+                bboxNormalized: contour,
+                sharpness: result.quality.blurScore
+              });
+              if (snap) {
+                targetDetectionEngine.scanCapturedImagesForQR();
+              }
+            }
+          }
         }
       }
 
@@ -333,6 +389,32 @@ export const PhoneDroneDashboard: React.FC = () => {
           >
             {progress.telemetryHealth.isArmed ? 'ARMED' : 'DISARMED'}
           </div>
+
+          {/* Geofence & Pre-Arm Lockout Status Badge */}
+          {(() => {
+            const liveTelem = mavlinkService.getTelemetry();
+            const armCheck = geofenceService.canArmVehicle(liveTelem.latitude, liveTelem.longitude);
+            return (
+              <div
+                className={`px-2.5 py-1 rounded-md border flex items-center gap-1.5 font-bold ${
+                  !geofenceState.enabled
+                    ? 'bg-slate-900 border-slate-700 text-slate-400'
+                    : armCheck.canArm
+                    ? 'bg-emerald-950/60 border-emerald-500/50 text-emerald-400'
+                    : 'bg-red-950/60 border-red-500/50 text-red-400 animate-pulse'
+                }`}
+              >
+                <ShieldAlert className="w-3.5 h-3.5" />
+                <span>
+                  {!geofenceState.enabled
+                    ? 'GEOFENCE: OFF'
+                    : armCheck.canArm
+                    ? 'GEOFENCE: LOCKED INSIDE'
+                    : 'ARM BLOCKED: OUTSIDE FENCE'}
+                </span>
+              </div>
+            );
+          })()}
         </div>
       </header>
 
@@ -398,6 +480,15 @@ export const PhoneDroneDashboard: React.FC = () => {
                   </span>
                   <span className="px-2 py-0.5 rounded bg-black/60 backdrop-blur-md border border-slate-700/80 text-[10px] font-mono text-cyan-300">
                     MODE: {detectionMode}
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-black/60 backdrop-blur-md border border-slate-700/80 text-[10px] font-mono text-emerald-300 flex items-center gap-1">
+                    <Activity className="w-2.5 h-2.5 text-emerald-400" />
+                    <span>{streamHealth.fps} FPS</span>
+                    <span className="text-slate-500">•</span>
+                    <span>{streamHealth.latencyMs}ms</span>
+                    {streamHealth.isStalled && (
+                      <span className="text-red-400 font-bold animate-pulse">STALLED</span>
+                    )}
                   </span>
                 </div>
 
@@ -473,6 +564,92 @@ export const PhoneDroneDashboard: React.FC = () => {
                 <span>WP: {progress.activeWaypointIndex + 1} / {progress.totalWaypoints || 0}</span>
               </div>
             </div>
+          </div>
+
+          {/* AREA: CAPTURED AREA SURVEY SNAPSHOTS GALLERY (WHOLE-AREA SURVEY) */}
+          <div className="p-3 bg-[#0c1424] rounded-xl border border-slate-800 flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Camera className="w-4 h-4 text-emerald-400" />
+                <span className="font-orbitron font-extrabold text-xs tracking-wider text-slate-200">
+                  CAPTURED AREA SNAPSHOTS ({capturedImages.length})
+                </span>
+                <span className="text-[10px] font-mono text-slate-400 hidden sm:inline">
+                  • 1.5m Spatial Deduplication • Multi-Scale QR Queue
+                </span>
+              </div>
+              <button
+                type="button"
+                disabled={capturedImages.length === 0 || isScanningSnapshots}
+                onClick={async () => {
+                  setIsScanningSnapshots(true);
+                  try {
+                    await targetDetectionEngine.scanCapturedImagesForQR();
+                  } finally {
+                    setIsScanningSnapshots(false);
+                  }
+                }}
+                className="px-2.5 py-1 rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-[11px] font-mono font-bold flex items-center gap-1 transition shadow"
+              >
+                <RefreshCw className={`w-3 h-3 ${isScanningSnapshots ? 'animate-spin' : ''}`} />
+                <span>{isScanningSnapshots ? 'SCANNING QUEUE...' : 'SCAN SNAPSHOTS NOW'}</span>
+              </button>
+            </div>
+
+            {capturedImages.length === 0 ? (
+              <div className="py-3 px-4 bg-slate-900/40 rounded-lg border border-dashed border-slate-800 text-center text-slate-500 text-xs font-mono">
+                No ground anomaly snapshots captured yet. During bounded search, ground contours with sharpness σ² ≥ 60 are automatically geotagged and queued here.
+              </div>
+            ) : (
+              <div className="flex items-center gap-2.5 overflow-x-auto pb-1.5 scrollbar-thin">
+                {capturedImages.map((img) => (
+                  <div
+                    key={img.id}
+                    className="relative shrink-0 w-36 bg-slate-900 rounded-lg border border-slate-800 overflow-hidden text-[10px] font-mono shadow group hover:border-slate-700 transition"
+                  >
+                    <div className="relative aspect-video bg-black flex items-center justify-center">
+                      <img
+                        src={img.imageDataUrl}
+                        alt="Area Survey Capture"
+                        className="w-full h-full object-cover"
+                      />
+                      {/* Status Badge */}
+                      <span
+                        className={`absolute top-1 right-1 px-1 py-0.5 rounded text-[9px] font-bold ${
+                          img.scanStatus === 'QR_DETECTED'
+                            ? 'bg-emerald-500 text-slate-950'
+                            : img.scanStatus === 'PENDING_QR_SCAN'
+                            ? 'bg-amber-500/90 text-slate-950 animate-pulse'
+                            : 'bg-slate-800/90 text-slate-300'
+                        }`}
+                      >
+                        {img.scanStatus === 'QR_DETECTED'
+                          ? 'QR FOUND'
+                          : img.scanStatus === 'PENDING_QR_SCAN'
+                          ? 'SCANNING'
+                          : 'CLEAR'}
+                      </span>
+                    </div>
+
+                    <div className="p-1.5 space-y-0.5">
+                      {img.qrPayload ? (
+                        <div className="font-bold text-emerald-400 truncate">
+                          "{img.qrPayload}"
+                        </div>
+                      ) : (
+                        <div className="text-slate-300 truncate">
+                          {img.estimatedGroundLat.toFixed(5)}, {img.estimatedGroundLon.toFixed(5)}
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between text-slate-500 text-[9px]">
+                        <span>ALT: {img.altitudeAgl.toFixed(1)}m</span>
+                        <span>HDG: {img.headingDeg.toFixed(0)}°</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* AREA 7: ORIENTATION, FLASHLIGHT, & CAMERA CONTROLS BAR */}

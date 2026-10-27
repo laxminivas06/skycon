@@ -27,6 +27,7 @@ import { AutonomousMissionControlCard } from './AutonomousMissionControlCard';
 import { PreflightValidationModal } from './PreflightValidationModal';
 import { MapPanel } from './MapPanel';
 import { CameraFeed } from './CameraFeed';
+import { GeofencePanel } from './GeofencePanel';
 import { WaypointManager } from './WaypointManager';
 import { FlightParams } from './FlightParams';
 import { AutonomousMissionConfigModal } from '../../components/Mission/AutonomousMissionConfigModal';
@@ -630,7 +631,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             </>
           )}
 
-          {/* C. Flight Parameters */}
+          {/* C. Geofence Enforcement Panel */}
+          <GeofencePanel className="w-full shrink-0" />
+
+          {/* D. Flight Parameters */}
           <FlightParams className="w-full shrink-0" />
         </aside>
 

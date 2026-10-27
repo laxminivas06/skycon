@@ -1,4 +1,5 @@
 import { LatLngPoint, SearchBoundaryConfig } from '../../types/mission';
+import { clampWaypointToGeofence } from '../geofenceService';
 import {
   CameraParameters,
   GroundFootprint,
@@ -131,5 +132,25 @@ export abstract class BaseSearchAlgorithm {
       lat: sumLat / coords.length,
       lng: sumLng / coords.length
     };
+  }
+
+  /**
+   * Filters and clamps generated search waypoints so 100% of waypoints stay
+   * strictly inside the polygon minus a safety buffer (default fenceMarginMeters = 2.0m).
+   */
+  public static clampWaypointsToPolygon(
+    waypoints: SearchWaypoint[],
+    polygon?: LatLngPoint[],
+    marginMeters: number = 2.0
+  ): SearchWaypoint[] {
+    if (!polygon || polygon.length < 3) return waypoints;
+    return waypoints.map((wp) => {
+      const clamped = clampWaypointToGeofence({ lat: wp.lat, lng: wp.lng }, polygon, marginMeters);
+      return {
+        ...wp,
+        lat: clamped.lat,
+        lng: clamped.lng
+      };
+    });
   }
 }
