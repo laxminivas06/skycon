@@ -76,7 +76,7 @@ import {
 import {
   phoneDroneMissionService
 } from '../frontend/src/services/phoneDroneMissionService';
-import { ipCameraService } from '../frontend/src/services/ipCameraService';
+import { droneCameraStreamService } from '../frontend/src/services/droneCameraStreamService';
 import { SpiralSearch } from '../frontend/src/services/searchEngine/SpiralSearch';
 import { TangentialSearch } from '../frontend/src/services/searchEngine/TangentialSearch';
 import { GridSearch } from '../frontend/src/services/searchEngine/GridSearch';
@@ -529,24 +529,19 @@ async function runAllTests() {
   );
 
   // =========================================================================
-  // MODULE 6: IP CAMERA STREAM HEALTH & ZERO-CORS PROXYING
+  // MODULE 6: DRONE CORE ONBOARD CAMERA STREAM LIFECYCLE
   // =========================================================================
-  console.log('\n--- MODULE 6: IP Camera Stream Health & Zero-CORS Stream Monitoring ---');
+  console.log('\n--- MODULE 6: Drone Core Onboard Camera Stream Monitoring ---');
 
-  ipCameraService.recordFrameRendered(24);
-  ipCameraService.recordFrameRendered(28);
-  ipCameraService.recordFrameRendered(22);
-
-  const health = ipCameraService.getStreamHealth();
+  const status = droneCameraStreamService.getCurrentStatus();
   assert(
-    health.lastFrameTime > 0 && health.latencyMs === 22 && !health.isStalled,
-    `ipCameraService tracks frame latency (${health.latencyMs}ms) and active stream state`
+    status === 'WAITING_FOR_CAMERA' || status === 'LIVE_FEED_CONNECTED',
+    `droneCameraStreamService tracks active stream state (${status})`
   );
 
-  const streamUrl = ipCameraService.getEffectiveStreamUrl();
   assert(
-    streamUrl.includes('/api/ipcam/proxy?url='),
-    `getEffectiveStreamUrl proxies through zero-CORS endpoint (${streamUrl})`
+    typeof droneCameraStreamService.reconnect === 'function',
+    'droneCameraStreamService exposes reconnect method'
   );
 
   // =========================================================================

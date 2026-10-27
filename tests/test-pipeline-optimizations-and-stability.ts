@@ -56,7 +56,7 @@ if (typeof globalThis.window === 'undefined') {
 import { phoneDroneMissionService } from '../frontend/src/services/phoneDroneMissionService';
 import { geofenceService } from '../frontend/src/services/geofenceService';
 import { mavlinkService } from '../frontend/src/services/mavlinkService';
-import { ipCameraService } from '../frontend/src/services/ipCameraService';
+import { droneCameraStreamService } from '../frontend/src/services/droneCameraStreamService';
 import { reconDetectionService } from '../frontend/src/services/reconDetectionService';
 import { targetDetectionEngine } from '../frontend/src/services/targetDetectionEngine';
 
@@ -118,8 +118,8 @@ async function runOptimizationAndStabilityTests() {
   // -------------------------------------------------------------------------
   console.log('\n--- TEST 3: WebRTC Track Lifecycle Listeners & Reconnect ---');
 
-  assert(typeof ipCameraService.reconnectOnboardCamera === 'function', 'reconnectOnboardCamera method exposed');
-  assert(typeof ipCameraService.stopOnboardCamera === 'function', 'stopOnboardCamera cleanly stops tracks');
+  assert(typeof droneCameraStreamService.reconnect === 'function', 'droneCameraStreamService.reconnect method exposed');
+  assert(typeof droneCameraStreamService.stopPublishing === 'function', 'droneCameraStreamService.stopPublishing cleanly stops tracks');
 
   // -------------------------------------------------------------------------
   // TEST 4: Store-and-Forward Retry Queue Quota Protection

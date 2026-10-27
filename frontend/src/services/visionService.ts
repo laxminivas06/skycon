@@ -791,7 +791,7 @@ class VisionService {
     }
 
     const event: PhotoCaptureEvent = {
-      id: `PHOTO_SNAP_${Date.now()}_IPCAM`,
+      id: `PHOTO_SNAP_${Date.now()}_DRONE_CAM`,
       timestamp: Date.now(),
       intervalSec: this.captureIntervalSec,
       qrFound: hasContent,

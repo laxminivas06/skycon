@@ -6,7 +6,7 @@
 import { geofenceService } from '../frontend/src/services/geofenceService';
 import { GridSearch } from '../frontend/src/services/searchEngine/GridSearch';
 import { targetDetectionEngine } from '../frontend/src/services/targetDetectionEngine';
-import { ipCameraService } from '../frontend/src/services/ipCameraService';
+import { droneCameraStreamService } from '../frontend/src/services/droneCameraStreamService';
 import { mavlinkService } from '../frontend/src/services/mavlinkService';
 import { phoneDroneMissionService } from '../frontend/src/services/phoneDroneMissionService';
 import { reconDetectionService } from '../frontend/src/services/reconDetectionService';
@@ -230,23 +230,17 @@ async function runAllTests() {
     assert(!res5.isValid && res5.twoDigitCode === null, 'Non-digit payload rejected correctly');
   });
 
-  // --- MODULE 4: ONBOARD WEBRTC EDGE CAMERA & HARDWARE ZOOM ---
-  console.log('\n--- MODULE 4: Onboard WebRTC Edge Camera & Hardware Zoom ---');
+  // --- MODULE 4: ONBOARD WEBRTC EDGE CAMERA STREAM LIFECYCLE ---
+  console.log('\n--- MODULE 4: Onboard WebRTC Edge Camera Stream Lifecycle ---');
 
-  await test('ipCameraService supports ONBOARD_WEBRTC source mode and zoom controls', async () => {
-    ipCameraService.setSourceMode('ONBOARD_WEBRTC');
-    assert(ipCameraService.getSourceMode() === 'ONBOARD_WEBRTC', 'Camera source mode set to ONBOARD_WEBRTC');
-
-    // Test zoom control
-    const zoomResult = await ipCameraService.setCameraZoom(2.5);
-    assert(zoomResult.zoomLevel === 2.5, `Camera zoom set to 2.5x (actual: ${zoomResult.zoomLevel}x, applied via ${zoomResult.appliedVia})`);
-
-    // Test zoom clamping
-    const clampHigh = await ipCameraService.setCameraZoom(10.0);
-    assert(clampHigh.zoomLevel <= 4.0, `Camera zoom clamped to max 4.0x (got ${clampHigh.zoomLevel}x)`);
-
-    const clampLow = await ipCameraService.setCameraZoom(0.2);
-    assert(clampLow.zoomLevel >= 1.0, `Camera zoom clamped to min 1.0x (got ${clampLow.zoomLevel}x)`);
+  await test('droneCameraStreamService initializes in WAITING_FOR_CAMERA state', () => {
+    const status = droneCameraStreamService.getCurrentStatus();
+    assert(
+      status === 'WAITING_FOR_CAMERA' || status === 'LIVE_FEED_CONNECTED',
+      `Initial stream status is valid: ${status}`
+    );
+    assert(typeof droneCameraStreamService.reconnect === 'function', 'reconnect method exposed');
+    assert(typeof droneCameraStreamService.startSubscribing === 'function', 'startSubscribing method exposed');
   });
 
   // --- MODULE 5: MAVLINK STATUSTEXT DOWNLINK & RETURN TO LAUNCH (RTL) ---

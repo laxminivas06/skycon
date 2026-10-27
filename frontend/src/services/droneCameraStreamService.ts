@@ -673,6 +673,16 @@ class DroneCameraStreamService {
   public getMediaStream(): MediaStream | null {
     return this.latestRemoteStream;
   }
+
+  public reconnect() {
+    this.stopSubscribing();
+    if (this.ws) {
+      try { this.ws.close(); } catch (e) {}
+      this.ws = null;
+    }
+    this.initWebSocket();
+    this.startSubscribing();
+  }
 }
 
 export const droneCameraStreamService = new DroneCameraStreamService();

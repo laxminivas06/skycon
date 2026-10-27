@@ -25,7 +25,7 @@ import {
   CapturedAreaImage
 } from './targetDetectionEngine';
 import { geofenceService } from './geofenceService';
-import { ipCameraService } from './ipCameraService';
+
 import {
   evidenceUploadService,
   ServerAcknowledgment
@@ -582,10 +582,7 @@ export class PhoneDroneMissionService {
             mavlinkService.sendConditionYaw((telemHeading + 45) % 360, 20);
           }
 
-          if (this.activeWaypointIndex % 3 === 0) {
-            ipCameraService.setCameraZoom(2.0);
-            setTimeout(() => ipCameraService.setCameraZoom(1.0), 1200);
-          }
+
         }
         this.notify();
       } else {
@@ -660,12 +657,7 @@ export class PhoneDroneMissionService {
         this.transitionTo('VERIFYING', `Position locked over target coordinate (Dist: ${dist.toFixed(1)}m <= 1.0m). Executing PTZ zoom sweep and close-up verification hover.`);
         await this.commandFlightModeSafely('LOITER');
 
-        // Trigger hardware PTZ zoom sweep and autofocus
-        try {
-          ipCameraService.setAutoZoomSweeping(true);
-          ipCameraService.stepZoom(1.5);
-          ipCameraService.triggerFocus();
-        } catch {}
+
 
         // Construct verified target event from candidate image
         const now = Date.now();
@@ -713,9 +705,7 @@ export class PhoneDroneMissionService {
 
         // Hover for verification window
         setTimeout(() => {
-          try {
-            ipCameraService.setAutoZoomSweeping(false);
-          } catch {}
+
           this.handleRevisitVerificationComplete(true);
         }, this.config.revisitHoverSeconds * 1000);
       }

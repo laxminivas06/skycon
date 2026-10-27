@@ -14,7 +14,13 @@ import {
   CapturedAreaImage
 } from '../../services/targetDetectionEngine';
 import { geofenceService, GeofenceState } from '../../services/geofenceService';
-import { ipCameraService, StreamHealthMetrics } from '../../services/ipCameraService';
+export interface StreamHealthMetrics {
+  fps: number;
+  latencyMs: number;
+  lastFrameTime: number;
+  droppedFrames: number;
+  isStalled: boolean;
+}
 import {
   phoneDeviceService,
   ScreenOrientationMode,
@@ -111,9 +117,13 @@ export const PhoneDroneDashboard: React.FC = () => {
   const [capturedImages, setCapturedImages] = useState<CapturedAreaImage[]>(() =>
     targetDetectionEngine.getCapturedImages()
   );
-  const [streamHealth, setStreamHealth] = useState<StreamHealthMetrics>(() =>
-    ipCameraService.getStreamHealth()
-  );
+  const [streamHealth, setStreamHealth] = useState<StreamHealthMetrics>({
+    fps: 30,
+    latencyMs: 16,
+    lastFrameTime: Date.now(),
+    droppedFrames: 0,
+    isStalled: false
+  });
   const [isScanningSnapshots, setIsScanningSnapshots] = useState<boolean>(false);
 
   // Modals & Confirmation Dialogs
@@ -237,15 +247,13 @@ export const PhoneDroneDashboard: React.FC = () => {
     return () => { unsubSync(); };
   }, []);
 
-  // 4b. Subscribe to Geofence, Captured Area Images & Stream Health
+  // 4b. Subscribe to Geofence & Captured Area Images
   useEffect(() => {
     const unsubGeofence = geofenceService.subscribe((s) => setGeofenceState(s));
     const unsubImages = targetDetectionEngine.subscribeCapturedImages((imgs) => setCapturedImages(imgs));
-    const unsubHealth = ipCameraService.subscribeStreamHealth((sh) => setStreamHealth(sh));
     return () => {
       unsubGeofence();
       unsubImages();
-      unsubHealth();
     };
   }, []);
 
@@ -300,7 +308,12 @@ export const PhoneDroneDashboard: React.FC = () => {
           const tFrameStart = performance.now();
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
           const frameLatency = Math.round(performance.now() - tFrameStart);
-          ipCameraService.recordFrameRendered(frameLatency);
+          setStreamHealth((prev) => ({
+            ...prev,
+            latencyMs: frameLatency,
+            lastFrameTime: Date.now(),
+            isStalled: false
+          }));
 
           const telem = mavlinkService.getTelemetry();
           const result = await targetDetectionEngine.processFrame(canvas, {
