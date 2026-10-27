@@ -37,10 +37,24 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoWebsockets.h>
+using namespace websockets;
 #include <time.h>
-#include <sys/time.h>
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
+#include "soc/rtc_cntl_struct.h"
+
+// Disable hardware Brownout Detector at earliest C initialization (before RTOS/setup)
+// to prevent reboot loops when powered over computer USB cables or weak TELEM2 power
+__attribute__((constructor)) static void disable_bod_early_boot() {
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+  RTCCNTL.brown_out.val = 0;
+  RTCCNTL.brown_out.ena = 0;
+  RTCCNTL.brown_out.rst_ena = 0;
+  RTCCNTL.brown_out.close_flash_ena = 0;
+  RTCCNTL.brown_out.pd_rf_ena = 0;
+  RTCCNTL.brown_out.ana_rst_en = 0;
+  RTCCNTL.int_ena.rtc_brown_out = 0;
+}
 
 // =====================================================================================
 // 1. WI-FI CONFIGURATION (Phone Hotspot or Field Wi-Fi)
