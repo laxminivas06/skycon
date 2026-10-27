@@ -93,26 +93,105 @@ export function getPolygonCentroid(polygon: LatLngPoint[]): LatLngPoint {
 }
 
 /**
- * Clamps a waypoint inside a polygon by vectoring inward toward the polygon centroid
+ * Guaranteed interior anchor for convex and concave polygons alike.
+ * If the arithmetic centroid is strictly inside the polygon, returns the centroid.
+ * If the arithmetic centroid lies outside (concave L/U-shaped polygon),
+ * tests candidate interior midpoints between vertices and picks the interior point
+ * with the highest clearance from the perimeter.
+ */
+export function getSafeInteriorAnchor(polygon: LatLngPoint[]): LatLngPoint {
+  if (!polygon || polygon.length === 0) return { lat: 12.9715987, lng: 77.5945627 };
+  if (polygon.length < 3) return polygon[0];
+
+  const centroid = getPolygonCentroid(polygon);
+  let centroidMinDist = Infinity;
+  for (const v of polygon) {
+    const d = computeHaversine(centroid.lat, centroid.lng, v.lat, v.lng);
+    if (d < centroidMinDist) centroidMinDist = d;
+  }
+
+  if (isPointInsideGeofence(centroid.lat, centroid.lng, polygon) && centroidMinDist >= 2.0) {
+    return centroid;
+  }
+
+  // Centroid lies outside concave polygon or directly on a corner! Search for best interior point
+  let bestInteriorPt: LatLngPoint | null = null;
+  let maxClearance = -1;
+
+  // 1. Test midpoints between all pairs of vertices
+  const candidates: LatLngPoint[] = [];
+  for (let i = 0; i < polygon.length; i++) {
+    for (let j = i + 1; j < polygon.length; j++) {
+      candidates.push({
+        lat: (polygon[i].lat + polygon[j].lat) / 2,
+        lng: (polygon[i].lng + polygon[j].lng) / 2
+      });
+    }
+  }
+
+  // 2. Also test bounding box grid sampling
+  let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+  for (const p of polygon) {
+    if (p.lat < minLat) minLat = p.lat;
+    if (p.lat > maxLat) maxLat = p.lat;
+    if (p.lng < minLng) minLng = p.lng;
+    if (p.lng > maxLng) maxLng = p.lng;
+  }
+  const dLatStep = (maxLat - minLat) / 8;
+  const dLngStep = (maxLng - minLng) / 8;
+  for (let r = 1; r < 8; r++) {
+    for (let c = 1; c < 8; c++) {
+      candidates.push({
+        lat: minLat + r * dLatStep,
+        lng: minLng + c * dLngStep
+      });
+    }
+  }
+
+  // Evaluate candidate interior points
+  for (const cand of candidates) {
+    if (isPointInsideGeofence(cand.lat, cand.lng, polygon)) {
+      let minDist = Infinity;
+      for (const v of polygon) {
+        const d = computeHaversine(cand.lat, cand.lng, v.lat, v.lng);
+        if (d < minDist) minDist = d;
+      }
+      if (minDist > maxClearance) {
+        maxClearance = minDist;
+        bestInteriorPt = cand;
+      }
+    }
+  }
+
+  if (bestInteriorPt) {
+    return bestInteriorPt;
+  }
+
+  // Fallback: verified first vertex or midpoint
+  return polygon[0];
+}
+
+/**
+ * Clamps a waypoint inside a polygon by vectoring inward toward a guaranteed safe interior anchor
  * by a specified margin in meters if the point is outside or too close to the perimeter.
  */
 export function clampWaypointToGeofence(wp: LatLngPoint, polygon: LatLngPoint[], marginMeters: number = 2.0): LatLngPoint {
   if (!polygon || polygon.length < 3) return wp;
-  const centroid = getPolygonCentroid(polygon);
+  const anchor = getSafeInteriorAnchor(polygon);
   const inside = isPointInsideGeofence(wp.lat, wp.lng, polygon);
 
   let point = { ...wp };
 
   if (!inside) {
-    // Binary search towards centroid to find boundary intersection
+    // Binary search towards safe interior anchor to find boundary intersection
     let low = 0.0;
     let high = 1.0;
-    let clamped = { ...centroid };
+    let clamped = { ...anchor };
 
     for (let iter = 0; iter < 16; iter++) {
       const mid = (low + high) / 2;
-      const testLat = wp.lat + (centroid.lat - wp.lat) * mid;
-      const testLng = wp.lng + (centroid.lng - wp.lng) * mid;
+      const testLat = wp.lat + (anchor.lat - wp.lat) * mid;
+      const testLng = wp.lng + (anchor.lng - wp.lng) * mid;
       if (isPointInsideGeofence(testLat, testLng, polygon)) {
         clamped = { lat: testLat, lng: testLng };
         high = mid;
@@ -123,17 +202,17 @@ export function clampWaypointToGeofence(wp: LatLngPoint, polygon: LatLngPoint[],
     point = clamped;
   }
 
-  // Apply safety buffer inward toward centroid
+  // Apply safety buffer inward toward safe interior anchor
   if (marginMeters > 0) {
-    const distToCenter = computeHaversine(point.lat, point.lng, centroid.lat, centroid.lng);
+    const distToCenter = computeHaversine(point.lat, point.lng, anchor.lat, anchor.lng);
     if (distToCenter > marginMeters) {
       const ratio = Math.min(1.0, marginMeters / distToCenter);
       point = {
-        lat: point.lat + (centroid.lat - point.lat) * ratio,
-        lng: point.lng + (centroid.lng - point.lng) * ratio,
+        lat: point.lat + (anchor.lat - point.lat) * ratio,
+        lng: point.lng + (anchor.lng - point.lng) * ratio,
       };
     } else {
-      point = { ...centroid };
+      point = { ...anchor };
     }
   }
 
@@ -176,18 +255,19 @@ function computeHaversine(lat1: number, lon1: number, lat2: number, lon2: number
   return R * c;
 }
 
-// Point-in-polygon raycasting algorithm
-function isPointInPolygon(pt: LatLngPoint, poly: LatLngPoint[]): boolean {
-  if (poly.length < 3) return true;
-  let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const xi = poly[i].lat, yi = poly[i].lng;
-    const xj = poly[j].lat, yj = poly[j].lng;
-    const intersect = ((yi > pt.lng) !== (yj > pt.lng)) &&
-      (pt.lat < ((xj - xi) * (pt.lng - yi)) / (yj - yi) + xi);
-    if (intersect) inside = !inside;
+// Point-in-polygon raycasting algorithm supporting both (pt, poly) and (lat, lon, poly)
+export function isPointInPolygon(ptOrLat: LatLngPoint | number, polyOrLon: LatLngPoint[] | number, maybePoly?: LatLngPoint[]): boolean {
+  let lat: number, lon: number, poly: LatLngPoint[];
+  if (typeof ptOrLat === 'number') {
+    lat = ptOrLat;
+    lon = polyOrLon as number;
+    poly = maybePoly || [];
+  } else {
+    lat = ptOrLat.lat;
+    lon = ptOrLat.lng;
+    poly = polyOrLon as LatLngPoint[];
   }
-  return inside;
+  return isPointInsideGeofence(lat, lon, poly);
 }
 
 class GeofenceService {
@@ -649,6 +729,36 @@ class GeofenceService {
       }
     }
     return { canArm: true };
+  }
+
+  public isPointInsideGeofence(lat: number, lon: number, polygon: LatLngPoint[]): boolean {
+    return isPointInsideGeofence(lat, lon, polygon);
+  }
+
+  public isPointInPolygon(lat: number, lon: number, polygon: LatLngPoint[]): boolean {
+    return isPointInsideGeofence(lat, lon, polygon);
+  }
+
+  public getSafeInteriorAnchor(polygon: LatLngPoint[]): LatLngPoint {
+    return getSafeInteriorAnchor(polygon);
+  }
+
+  public clampWaypointToGeofence(latOrPoint: number | LatLngPoint, lonOrPolygon: number | LatLngPoint[], polygonOrMargin?: LatLngPoint[] | number, maybeMargin: number = 2.0): LatLngPoint {
+    if (typeof latOrPoint === 'object') {
+      return clampWaypointToGeofence(latOrPoint, lonOrPolygon as LatLngPoint[], (polygonOrMargin as number) || 2.0);
+    }
+    return clampWaypointToGeofence({ lat: latOrPoint, lng: lonOrPolygon as number }, polygonOrMargin as LatLngPoint[], maybeMargin);
+  }
+
+  public getDistanceToPerimeter(lat: number, lng: number, polygon: LatLngPoint[]): number {
+    if (!polygon || polygon.length === 0) return 0;
+    let minDist = Infinity;
+    for (let i = 0; i < polygon.length; i++) {
+      const v = polygon[i];
+      const d = computeHaversine(lat, lng, v.lat, v.lng);
+      if (d < minDist) minDist = d;
+    }
+    return minDist;
   }
 
   public getState(): GeofenceState {

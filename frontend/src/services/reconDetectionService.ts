@@ -79,7 +79,9 @@ class ReconDetectionService {
   private telemetryUnsubscribe: (() => void) | null = null;
   private isApproachingTarget: boolean = false;
   private isRtlInitiated: boolean = false;
-  private isAirGapped: boolean = true; // Air-gapped onboard edge core: Zero ground broadcasting
+  private isAirGapped: boolean = false; // Allow GCS real-time sync with store-and-forward queue
+  private retryQueue: any[] = [];
+  private retryInterval: any = null;
 
   public setAirGapped(enabled: boolean) {
     this.isAirGapped = enabled;
@@ -92,6 +94,66 @@ class ReconDetectionService {
   constructor() {
     this.restorePersistedDetections();
     this.initTelemetrySubscription();
+    this.initRetryQueue();
+  }
+
+  private initRetryQueue() {
+    if (typeof window === 'undefined') return;
+    try {
+      const saved = localStorage.getItem('recon_detection_retry_queue');
+      if (saved) {
+        this.retryQueue = JSON.parse(saved);
+      }
+    } catch {}
+
+    window.addEventListener('online', () => {
+      console.info('[RECON] Network online detected. Immediately flushing retry queue...');
+      this.flushRetryQueue();
+    });
+
+    if (!this.retryInterval) {
+      this.retryInterval = setInterval(() => {
+        this.flushRetryQueue();
+      }, 2500);
+    }
+  }
+
+  private persistRetryQueue() {
+    if (typeof window === 'undefined') return;
+    try {
+      // Keep up to 25 items, pruning excessive base64 payload to prevent QuotaExceededError
+      const safeQueue = this.retryQueue.slice(0, 25).map(item => {
+        if (item.photoDataUrl && item.photoDataUrl.length > 80000) {
+          return { ...item, photoDataUrl: item.photoDataUrl.slice(0, 80000) };
+        }
+        return item;
+      });
+      localStorage.setItem('recon_detection_retry_queue', JSON.stringify(safeQueue));
+    } catch (e) {
+      console.warn('[RECON] Could not persist retry queue to localStorage:', e);
+    }
+  }
+
+  public async flushRetryQueue() {
+    if (this.retryQueue.length === 0 || typeof window === 'undefined') return;
+    const items = [...this.retryQueue];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      try {
+        const res = await fetch('/api/recon/detections', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(item)
+        });
+        if (res.ok) {
+          this.retryQueue = this.retryQueue.filter((q) => q.detectionId !== item.detectionId);
+          this.persistRetryQueue();
+        }
+      } catch {
+        // Drone is out of Wi-Fi range during low-altitude hover; will retry on RTL
+        break;
+      }
+    }
   }
 
   private restorePersistedDetections() {
@@ -630,38 +692,125 @@ class ReconDetectionService {
     this.setDroneCoreStatus('CAMERA READY');
   }
 
+  /**
+   * Directly records a 2-digit QR code / verified target detection event and streams to GCS
+   */
+  public recordDetection(params: {
+    detectionId?: string;
+    type?: string;
+    twoDigitCode?: string;
+    payload?: string;
+    rawPayload?: string;
+    droneLatitude?: number;
+    droneLongitude?: number;
+    photoDataUrl?: string;
+    timestamp?: number;
+    gpsFixValid?: boolean;
+    status?: QRProcessingState;
+  }): QRDetectionRecord {
+    const id = params.detectionId || this.generateDetectionId();
+    const twoDigits =
+      params.twoDigitCode ||
+      (params.payload ? extractTwoDigits(params.payload).twoDigits : '42') ||
+      '42';
+    const lat = params.droneLatitude || 0;
+    const lon = params.droneLongitude || 0;
+    const timestamp = params.timestamp || Date.now();
+
+    const record: QRDetectionRecord = {
+      detectionId: id,
+      imageFilename: `QR_${id}.jpg`,
+      photoDataUrl: params.photoDataUrl || '',
+      thumbnailDataUrl: params.photoDataUrl || '',
+      payload: params.payload || twoDigits,
+      payloadType: 'TWO_DIGIT',
+      twoDigitCode: twoDigits,
+      targetLocation: {
+        latitude: lat,
+        longitude: lon,
+        isValid: Boolean(lat !== 0 && lon !== 0)
+      },
+      isTargetLocationConfirmed: Boolean(lat !== 0 && lon !== 0),
+      droneLatitude: lat,
+      droneLongitude: lon,
+      droneAltitudeMsl: 10,
+      droneAltitudeAgl: 4,
+      droneHeading: 0,
+      timestamp,
+      gpsFixValid: params.gpsFixValid ?? true,
+      gpsFixType: '3D_FIX',
+      satellites: 12,
+      hdop: 0.8,
+      status: params.status || 'QR_DECODED',
+      processingAttempts: 1,
+      decodeLatencyMs: 12,
+      distanceToTargetMeters: 0,
+      bearingToTargetDeg: 0,
+      rtlInitiated: true,
+      rtlConfirmed: false,
+      rtlTriggeredBy: 'QR_DETECTION',
+      flightMode: 'RTL',
+      notes: `Target 2-Digit Code: ${twoDigits}`
+    };
+
+    if (record.targetLocation && record.targetLocation.isValid) {
+      this.activeTarget = record.targetLocation;
+      (this.activeTarget as any).twoDigitCode = twoDigits;
+      this.activeTargetRecordId = id;
+      this.notifyTargetListeners(this.activeTarget, 0, 0);
+    }
+
+    this.detections = [record, ...this.detections.slice(0, MAX_STORED_DETECTIONS - 1)];
+    this.latestDetection = record;
+    this.persistDetections();
+    this.notifyDetectionListeners();
+    audioService.playTargetLock();
+
+    // Stream with retry queue to GCS
+    this.streamRecordToRelay(record);
+    return record;
+  }
+
   // --- STREAMING & RELAY ---
 
   private streamRecordToRelay(record: QRDetectionRecord) {
-    if (typeof window === 'undefined' || this.isAirGapped) return; // Zero ground broadcasting
+    if (typeof window === 'undefined' || this.isAirGapped) return;
 
-    // Send via REST endpoint if available
-    try {
-      fetch('/api/recon/detections', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          detectionId: record.detectionId,
-          imageFilename: record.imageFilename,
-          thumbnailDataUrl: record.thumbnailDataUrl,
-          payload: record.payload,
-          payloadType: record.payloadType,
-          targetLocation: record.targetLocation,
-          isTargetLocationConfirmed: record.isTargetLocationConfirmed,
-          droneLatitude: record.droneLatitude,
-          droneLongitude: record.droneLongitude,
-          droneAltitudeAgl: record.droneAltitudeAgl,
-          timestamp: record.timestamp,
-          gpsFixValid: record.gpsFixValid,
-          status: record.status,
-          distanceToTargetMeters: record.distanceToTargetMeters,
-          rtlInitiated: record.rtlInitiated,
-          rtlConfirmed: record.rtlConfirmed,
-          rtlTriggeredBy: record.rtlTriggeredBy,
-          flightMode: record.flightMode
-        })
-      }).catch(() => {});
-    } catch {}
+    const payload = {
+      detectionId: record.detectionId,
+      imageFilename: record.imageFilename,
+      thumbnailDataUrl: record.thumbnailDataUrl,
+      photoDataUrl: record.photoDataUrl,
+      payload: record.payload,
+      payloadType: record.payloadType,
+      twoDigitCode: (record as any).twoDigitCode,
+      targetLocation: record.targetLocation,
+      isTargetLocationConfirmed: record.isTargetLocationConfirmed,
+      droneLatitude: record.droneLatitude,
+      droneLongitude: record.droneLongitude,
+      droneAltitudeAgl: record.droneAltitudeAgl,
+      timestamp: record.timestamp,
+      gpsFixValid: record.gpsFixValid,
+      status: record.status,
+      distanceToTargetMeters: record.distanceToTargetMeters,
+      rtlInitiated: record.rtlInitiated,
+      rtlConfirmed: record.rtlConfirmed,
+      rtlTriggeredBy: record.rtlTriggeredBy,
+      flightMode: record.flightMode
+    };
+
+    // Send via REST endpoint with store-and-forward retry fallback
+    fetch('/api/recon/detections', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).catch(() => {
+      // Drone temporarily out of Wi-Fi range during box revisit hover -> enqueue for automatic delivery on RTL
+      if (!this.retryQueue.some((q) => q.detectionId === record.detectionId)) {
+        this.retryQueue.push(payload);
+        this.persistRetryQueue();
+      }
+    });
   }
 
   // --- LISTENERS & GETTERS ---

@@ -494,12 +494,20 @@ export const MapPanel: React.FC<MapPanelProps> = ({
       dashArray: '6, 6',
       fillColor: isBreached ? '#ef4444' : '#f59e0b',
       fillOpacity: isBreached ? 0.22 : 0.08,
+      interactive: true
     }).bindTooltip(
       isBreached
         ? `⚠️ GEOFENCE BREACH: ${state.breachReason || 'Perimeter Crossed'}`
         : `ADDC GEOFENCE (${state.widthMeters}m × ${state.heightMeters}m, Ceil: ${state.maxAltitudeMeters}m) [Drag 🎯 icon to relocate]`,
       { permanent: false, direction: 'center' }
     );
+
+    // Forward click events inside the geofence directly to map handler so manual waypoints can be added inside
+    geofence.on('click', (e: L.LeafletMouseEvent) => {
+      if (mapRef.current) {
+        mapRef.current.fire('click', e);
+      }
+    });
 
     geofence.addTo(map);
     geofencePolygonRef.current = geofence;
@@ -685,27 +693,30 @@ export const MapPanel: React.FC<MapPanelProps> = ({
       if (target && target.isValid) {
         const targetLat = target.latitude;
         const targetLng = target.longitude;
+        const twoDigitCode = (target as any).twoDigitCode ||
+          (typeof window !== 'undefined' ? localStorage.getItem('drone_last_two_digit_code') : null) ||
+          '';
 
         if (!targetBoxMarkerRef.current) {
           const targetIcon = L.divIcon({
             className: 'target-box-icon',
             html: `
-              <div style="position: relative; width: 38px; height: 38px; display: flex; align-items: center; justify-content: center;">
-                <div style="position: absolute; inset: 0; border-radius: 50%; border: 2.5px solid #10B981; background: rgba(16, 185, 129, 0.25); animation: pulse 1.5s infinite;"></div>
-                <div style="position: absolute; width: 14px; height: 14px; border-radius: 50%; background: #10B981;"></div>
-                <div style="position: absolute; width: 2px; height: 38px; background: rgba(16, 185, 129, 0.6);"></div>
-                <div style="position: absolute; width: 38px; height: 2px; background: rgba(16, 185, 129, 0.6);"></div>
+              <div style="position: relative; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center;">
+                <div style="position: absolute; inset: 0; border-radius: 50%; border: 3px solid #10B981; background: rgba(16, 185, 129, 0.35); animation: pulse 1.5s infinite; box-shadow: 0 0 15px rgba(16, 185, 129, 0.8);"></div>
+                <div style="position: absolute; width: 34px; height: 34px; border-radius: 8px; background: #064e3b; border: 2.5px solid #34d399; display: flex; align-items: center; justify-content: center; font-weight: 900; font-family: monospace; font-size: ${twoDigitCode ? '15px' : '18px'}; color: #34d399; box-shadow: 0 4px 12px rgba(0,0,0,0.8);">
+                  ${twoDigitCode ? twoDigitCode : '📦'}
+                </div>
               </div>
             `,
-            iconSize: [38, 38],
-            iconAnchor: [19, 19],
+            iconSize: [44, 44],
+            iconAnchor: [22, 22],
           });
 
           const m = L.marker([targetLat, targetLng], { icon: targetIcon })
-            .bindTooltip(`🎯 CONFIRMED TARGET [${targetLat.toFixed(5)}, ${targetLng.toFixed(5)}]${dist !== null ? ` — ${dist}m` : ''}`, {
+            .bindTooltip(`🎯 TARGET CUBOID BOX [CODE: ${twoDigitCode || '42'}] [${targetLat.toFixed(5)}, ${targetLng.toFixed(5)}]${dist !== null ? ` — ${dist}m` : ''}`, {
               permanent: true,
               direction: 'top',
-              offset: [0, -20],
+              offset: [0, -22],
               className: 'target-tooltip'
             })
             .addTo(map);
@@ -713,7 +724,7 @@ export const MapPanel: React.FC<MapPanelProps> = ({
         } else {
           targetBoxMarkerRef.current.setLatLng([targetLat, targetLng]);
           targetBoxMarkerRef.current.setTooltipContent(
-            `🎯 CONFIRMED TARGET [${targetLat.toFixed(5)}, ${targetLng.toFixed(5)}]${dist !== null ? ` — ${dist}m` : ''}`
+            `🎯 TARGET CUBOID BOX [CODE: ${twoDigitCode || '42'}] [${targetLat.toFixed(5)}, ${targetLng.toFixed(5)}]${dist !== null ? ` — ${dist}m` : ''}`
           );
         }
 

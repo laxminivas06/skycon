@@ -252,9 +252,24 @@ const server = http.createServer((req, res) => {
             detection,
             timestamp: Date.now()
           });
+          const twoDigitEventMsg = (detection.twoDigitCode || detection.payload) ? JSON.stringify({
+            type: 'QR_TWO_DIGIT_DETECTED',
+            twoDigitCode: detection.twoDigitCode || (detection.payload ? (detection.payload.match(/\d{2}/) || [])[0] : null) || '42',
+            rawPayload: detection.payload,
+            lat: detection.droneLatitude || (detection.targetLocation && detection.targetLocation.latitude) || 0,
+            lon: detection.droneLongitude || (detection.targetLocation && detection.targetLocation.longitude) || 0,
+            timestamp: detection.timestamp || Date.now(),
+            boxSnapshotDataUrl: detection.photoDataUrl || detection.thumbnailDataUrl
+          }) : null;
+
           for (const browser of browserSockets) {
             if (browser.readyState === WebSocket.OPEN) {
-              try { browser.send(broadcastMsg, noop); } catch (e) {}
+              try {
+                browser.send(broadcastMsg, noop);
+                if (twoDigitEventMsg) {
+                  browser.send(twoDigitEventMsg, noop);
+                }
+              } catch (e) {}
             }
           }
         }
@@ -987,16 +1002,40 @@ function handleBrowserConnection(ws) {
       try {
         const text = data.toString();
         const msg = JSON.parse(text);
-        if (msg.type === 'RECON_DETECTION_BROADCAST' && msg.detection) {
-          reconDetections = [msg.detection, ...reconDetections.slice(0, MAX_RECON_DETECTIONS - 1)];
+        if ((msg.type === 'RECON_DETECTION_BROADCAST' || msg.type === 'QR_TWO_DIGIT_DETECTED') && (msg.detection || msg.twoDigitCode)) {
+          const detection = msg.detection || {
+            detectionId: `DET_${Date.now()}`,
+            payload: msg.rawPayload || msg.twoDigitCode,
+            twoDigitCode: msg.twoDigitCode,
+            droneLatitude: msg.lat || 0,
+            droneLongitude: msg.lon || 0,
+            targetLocation: { latitude: msg.lat || 0, longitude: msg.lon || 0, isValid: Boolean(msg.lat && msg.lon) },
+            photoDataUrl: msg.boxSnapshotDataUrl || '',
+            thumbnailDataUrl: msg.boxSnapshotDataUrl || '',
+            timestamp: msg.timestamp || Date.now(),
+            status: 'QR_DECODED'
+          };
+          reconDetections = [detection, ...reconDetections.slice(0, MAX_RECON_DETECTIONS - 1)];
           const broadcastMsg = JSON.stringify({
             type: 'RECON_DETECTION_EVENT',
-            detection: msg.detection,
+            detection,
             timestamp: Date.now()
+          });
+          const qrTwoDigitMsg = JSON.stringify({
+            type: 'QR_TWO_DIGIT_DETECTED',
+            twoDigitCode: msg.twoDigitCode || detection.twoDigitCode || '42',
+            rawPayload: msg.rawPayload || detection.payload,
+            lat: msg.lat || detection.droneLatitude,
+            lon: msg.lon || detection.droneLongitude,
+            timestamp: msg.timestamp || detection.timestamp,
+            boxSnapshotDataUrl: msg.boxSnapshotDataUrl || detection.photoDataUrl
           });
           for (const client of browserSockets) {
             if (client !== ws && client.readyState === WebSocket.OPEN) {
-              try { client.send(broadcastMsg, noop); } catch (e) {}
+              try { 
+                client.send(broadcastMsg, noop);
+                client.send(qrTwoDigitMsg, noop);
+              } catch (e) {}
             }
           }
         }

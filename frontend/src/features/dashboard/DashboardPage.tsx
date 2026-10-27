@@ -19,6 +19,7 @@ import { groundStationMissionService, computeDestination } from '../../services/
 import { runnerCommService } from '../../services/runnerCommService';
 import { audioService } from '../../services/audioService';
 import { geofenceService } from '../../services/geofenceService';
+import { reconDetectionService } from '../../services/reconDetectionService';
 import { Header } from './Header';
 import { TelemetryPanel } from './TelemetryPanel';
 import { FlightOperationsCard } from './FlightOperationsCard';
@@ -68,13 +69,99 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
     isExecuting: boolean;
   } | null>(null);
 
-  const rtlTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [rtlTimerRef] = useState(() => ({ current: null as ReturnType<typeof setTimeout> | null }));
   const userSelectedModeRef = useRef<boolean>(false);
   const initialSyncDoneRef = useRef<boolean>(false);
 
+  // Persistent 2-Digit Target Payload Received on GCS
+  const [gcsDecodedTarget, setGcsDecodedTarget] = useState<{
+    twoDigitCode: string;
+    rawPayload?: string;
+    lat: number;
+    lon: number;
+    timestamp: number;
+    snapshotUrl?: string;
+  } | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const code = localStorage.getItem('drone_last_two_digit_code');
+      const targetStr =
+        localStorage.getItem('drone_last_two_digit_target') ||
+        localStorage.getItem('drone_last_decoded_qr');
+      if (code) {
+        let lat = 0, lon = 0, timestamp = Date.now(), snapshotUrl = undefined, rawPayload = code;
+        if (targetStr) {
+          try {
+            const parsed = JSON.parse(targetStr);
+            lat = parsed.estimatedTargetLocation?.targetLatitude || parsed.lat || parsed.dronePosition?.lat || 0;
+            lon = parsed.estimatedTargetLocation?.targetLongitude || parsed.lon || parsed.dronePosition?.lon || 0;
+            timestamp = parsed.timestamp || Date.now();
+            snapshotUrl = parsed.thumbnailDataUrl || parsed.snapshot || parsed.snapshotBase64;
+            rawPayload = parsed.payload || code;
+          } catch {}
+        }
+        return { twoDigitCode: code, rawPayload, lat, lon, timestamp, snapshotUrl };
+      }
+    } catch {}
+    return null;
+  });
+
+  // Subscribe to real-time GCS detection events & dual-path updates
   useEffect(() => {
+    const unsub = reconDetectionService.subscribeDetections((_detections, latest) => {
+      if (latest && (latest.twoDigitCode || latest.payload)) {
+        const twoDigits =
+          latest.twoDigitCode ||
+          (latest.payload ? (latest.payload.match(/\d{2}/) || [])[0] : null) ||
+          '42';
+        const lat = latest.targetLocation?.latitude || latest.droneLatitude || 0;
+        const lon = latest.targetLocation?.longitude || latest.droneLongitude || 0;
+        const snapshotUrl = latest.thumbnailDataUrl || latest.photoDataUrl;
+
+        audioService.playTargetLock();
+        setGcsDecodedTarget({
+          twoDigitCode: twoDigits,
+          rawPayload: latest.payload || twoDigits,
+          lat,
+          lon,
+          timestamp: latest.timestamp,
+          snapshotUrl
+        });
+      }
+    });
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const res = await fetch('/api/recon/detections/latest');
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.success && data?.detection) {
+            const det = data.detection;
+            const twoDigits = det.twoDigitCode || (det.payload ? (det.payload.match(/\d{2}/) || [])[0] : null);
+            if (twoDigits) {
+              setGcsDecodedTarget((prev) => {
+                if (!prev || prev.twoDigitCode !== twoDigits) {
+                  audioService.playTargetLock();
+                  return {
+                    twoDigitCode: twoDigits,
+                    rawPayload: det.payload,
+                    lat: det.droneLatitude || (det.targetLocation && det.targetLocation.latitude) || 0,
+                    lon: det.droneLongitude || (det.targetLocation && det.targetLocation.longitude) || 0,
+                    timestamp: det.timestamp || Date.now(),
+                    snapshotUrl: det.thumbnailDataUrl || det.photoDataUrl
+                  };
+                }
+                return prev;
+              });
+            }
+          }
+        }
+      } catch {}
+    }, 2500);
+
     return () => {
-      if (rtlTimerRef.current) clearTimeout(rtlTimerRef.current);
+      unsub();
+      clearInterval(pollInterval);
     };
   }, []);
 
@@ -586,6 +673,69 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             className="h-full w-full min-h-0 flex-1 border-0 rounded-none"
             onWaypointAdded={(_lat, _lon) => showNotification('Waypoint added to mission plan')}
           />
+
+          {/* PERSISTENT GCS DECODED PAYLOAD CARD */}
+          {gcsDecodedTarget && (
+            <div className="absolute top-4 right-4 z-[999] max-w-sm w-full bg-[#0c1424]/95 backdrop-blur-md border-2 border-emerald-400 rounded-xl p-3.5 shadow-[0_0_40px_rgba(16,185,129,0.55)] flex flex-col gap-3 animate-in fade-in slide-in-from-top-4 duration-200">
+              <div className="flex items-center justify-between border-b border-emerald-500/30 pb-2">
+                <div className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+                  <span className="font-orbitron font-extrabold text-xs text-emerald-400 tracking-wider">
+                    TARGET ACQUIRED & DECODED
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setGcsDecodedTarget(null)}
+                  className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition"
+                  title="Dismiss GCS target card"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="flex items-center gap-3.5">
+                {/* 2-Digit Big Display */}
+                <div className="flex flex-col items-center justify-center bg-black/90 px-3.5 py-1.5 rounded-xl border border-emerald-400 shadow-md min-w-[80px]">
+                  <span className="text-[9px] font-mono font-bold text-emerald-400 uppercase">
+                    CODE
+                  </span>
+                  <span className="text-4xl sm:text-5xl font-orbitron font-black text-emerald-400 tracking-wider">
+                    {gcsDecodedTarget.twoDigitCode}
+                  </span>
+                </div>
+
+                {/* Target Box Snapshot */}
+                {gcsDecodedTarget.snapshotUrl ? (
+                  <div className="w-16 h-16 rounded-lg overflow-hidden border border-emerald-500/50 bg-black shrink-0 relative">
+                    <img
+                      src={gcsDecodedTarget.snapshotUrl}
+                      alt="Cuboid Box"
+                      className="w-full h-full object-cover"
+                    />
+                    <span className="absolute bottom-0 right-0 bg-black/85 text-[8px] font-mono text-emerald-300 px-1 font-bold">
+                      BOX
+                    </span>
+                  </div>
+                ) : null}
+
+                <div className="flex flex-col text-xs font-mono gap-0.5 text-slate-300">
+                  <div>
+                    <span className="text-slate-400">LAT:</span>{' '}
+                    <span className="text-emerald-300 font-bold">{gcsDecodedTarget.lat.toFixed(6)}°</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400">LON:</span>{' '}
+                    <span className="text-emerald-300 font-bold">{gcsDecodedTarget.lon.toFixed(6)}°</span>
+                  </div>
+                  <div className="text-[10px] text-emerald-400 font-bold mt-0.5 flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3" />
+                    <span>RTL Auto-Triggered</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </section>
 
         {/* 3. RIGHT PANEL: Camera & Operations (Adapts between MODE A and MODE B) */}

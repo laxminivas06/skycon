@@ -2704,6 +2704,57 @@ class MAVLinkService {
     }
   }
 
+  /**
+   * MAVLink STATUSTEXT (#253) Downlink Transmission:
+   * Packs diagnostic or target detection strings (e.g. "QR_CODE_DETECTED: 42")
+   * directly to the telemetry link so any GCS receives the decoded payload over telemetry.
+   */
+  public async sendStatusText(text: string, severity: number = 6): Promise<boolean> {
+    const isConnected = this.connectionState.isConnected || this.connectionState.isUsbConnected;
+    this.addStatusMessage('NOTICE', severity, text);
+    this.logDiagnostic('MAVLINK', `[STATUSTEXT] ${text}`, 'info');
+
+    if (!this.connectionState.isRealHardware || !isConnected) {
+      return true;
+    }
+
+    try {
+      const payload = new Uint8Array(51);
+      payload[0] = severity & 0xff;
+      const encoder = new TextEncoder();
+      const encoded = encoder.encode(text.slice(0, 50));
+      payload.set(encoded, 1);
+      const packet = this.buildMavlinkFrame(253 /* STATUSTEXT */, payload);
+      return await usbHostService.sendBytes(packet);
+    } catch (err) {
+      console.warn('[MAVLINK] sendStatusText error:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Commands vehicle yaw rotation via MAV_CMD_CONDITION_YAW (115)
+   * @param targetAngleDeg Target yaw heading [0-360]
+   * @param rateDegPerSec Turn rate (default 25 deg/s)
+   * @param direction 1 = Clockwise, -1 = Counter-Clockwise
+   * @param isRelative 0 = Absolute compass heading, 1 = Relative to current heading
+   */
+  public async sendConditionYaw(
+    targetAngleDeg: number,
+    rateDegPerSec: number = 25,
+    direction: number = 1,
+    isRelative: number = 0
+  ): Promise<boolean> {
+    const isConnected = this.connectionState.isConnected || this.connectionState.isUsbConnected;
+    this.logDiagnostic('MAVLINK', `MAV_CMD_CONDITION_YAW angle=${targetAngleDeg} rate=${rateDegPerSec} dir=${direction}`, 'info');
+    if (!this.connectionState.isRealHardware || !isConnected) {
+      this.telemetry.heading = targetAngleDeg;
+      this.notifyTelemetry();
+      return true;
+    }
+    return this.sendMavlinkCommandLong(115 /* MAV_CMD_CONDITION_YAW */, targetAngleDeg, rateDegPerSec, direction, isRelative);
+  }
+
   public async sendFenceEnable(enabled: boolean): Promise<{ success: boolean }> {
     const isConnected = this.connectionState.isConnected || this.connectionState.isUsbConnected;
     this.logDiagnostic('MAVLINK', `Sending MAV_CMD_DO_FENCE_ENABLE (1603) param1=${enabled ? 1 : 0}`, 'info');

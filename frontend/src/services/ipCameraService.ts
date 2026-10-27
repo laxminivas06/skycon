@@ -9,7 +9,7 @@ import { audioService } from './audioService';
 import { reconDetectionService } from './reconDetectionService';
 
 export type IpCameraStatus = 'OFF' | 'CONNECTING' | 'LIVE' | 'DISCONNECTED';
-export type CameraSourceMode = 'DRONE_CORE' | 'PHONE_IP_CAM';
+export type CameraSourceMode = 'DRONE_CORE' | 'PHONE_IP_CAM' | 'ONBOARD_WEBRTC';
 export type IpCameraPreset = 'IP_WEBCAM_ANDROID' | 'DROIDCAM' | 'ESP32_CAM' | 'CUSTOM';
 
 export interface IpCameraConfig {
@@ -81,6 +81,7 @@ class IpCameraService {
   private isZoomLocked: boolean = false;
   private lockedQrCode: string | null = null;
   private latestDetection: IpCameraDetection | null = null;
+  private onboardMediaStream: MediaStream | null = null;
 
   // Active scan worker state
   private scanIntervalId: any = null;
@@ -457,10 +458,115 @@ class IpCameraService {
     this.currentZoom = clamped;
     this.notifyZoom();
 
+    // 1. WebRTC optical zoom via track constraints
+    if (this.onboardMediaStream) {
+      try {
+        const track = this.onboardMediaStream.getVideoTracks()[0];
+        const caps = track?.getCapabilities?.() as any;
+        if (caps && 'zoom' in caps) {
+          const min = caps.zoom.min || 1;
+          const max = caps.zoom.max || 10;
+          const z = Math.max(min, Math.min(max, clamped));
+          (track as any).applyConstraints({ advanced: [{ zoom: z }] }).catch(() => {});
+        }
+      } catch {}
+    }
+
+    // 2. Phone IP camera hardware PTZ
     if (dispatchHardware && this.config.ip) {
       const base = `http://${this.config.ip}:${this.config.port}`;
       this.sendPtzZoom(base, clamped, false);
     }
+  }
+
+  /**
+   * Universal camera zoom handler supporting WebRTC advanced track constraints
+   * with automatic digital canvas center-crop fallback.
+   */
+  public async setCameraZoom(zoomLevel: number): Promise<{ zoomLevel: number; appliedVia: string }> {
+    this.setZoom(zoomLevel, true);
+    let appliedVia = 'DIGITAL_FALLBACK';
+    if (this.onboardMediaStream) {
+      try {
+        const track = this.onboardMediaStream.getVideoTracks()[0];
+        const caps = track?.getCapabilities?.() as any;
+        if (caps && 'zoom' in caps) {
+          appliedVia = 'WEBRTC_OPTICAL';
+        }
+      } catch {}
+    } else if (this.config.ip) {
+      appliedVia = 'HARDWARE_PTZ';
+    }
+    return { zoomLevel: this.currentZoom, appliedVia };
+  }
+
+  public getDigitalZoomFactor(): number {
+    return this.currentZoom;
+  }
+
+  /**
+   * Starts native phone WebRTC camera (ONBOARD_WEBRTC) with 1080p back camera
+   */
+  public async startOnboardCamera(): Promise<MediaStream | null> {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      return null;
+    }
+    try {
+      if (this.onboardMediaStream && this.onboardMediaStream.active) {
+        return this.onboardMediaStream;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 }
+        },
+        audio: false
+      });
+      this.onboardMediaStream = stream;
+
+      // Attach lifecycle listeners to video track for auto-recovery
+      const track = stream.getVideoTracks()[0];
+      if (track) {
+        track.onended = () => {
+          console.warn('[IP_CAMERA] Onboard camera track ended unexpectedly.');
+          this.status = 'DISCONNECTED';
+          this.notifyStatus();
+        };
+        track.onmute = () => {
+          console.warn('[IP_CAMERA] Onboard camera track muted by OS.');
+        };
+        track.onunmute = () => {
+          console.info('[IP_CAMERA] Onboard camera track unmuted.');
+          this.status = 'LIVE';
+          this.notifyStatus();
+        };
+      }
+
+      this.status = 'LIVE';
+      this.notifyStatus();
+      return stream;
+    } catch (err) {
+      console.warn('[IP_CAMERA] Failed to start onboard WebRTC camera:', err);
+      return null;
+    }
+  }
+
+  public stopOnboardCamera() {
+    if (this.onboardMediaStream) {
+      this.onboardMediaStream.getTracks().forEach((t) => t.stop());
+      this.onboardMediaStream = null;
+    }
+  }
+
+  public async reconnectOnboardCamera(): Promise<MediaStream | null> {
+    this.stopOnboardCamera();
+    await new Promise((r) => setTimeout(r, 300));
+    return this.startOnboardCamera();
+  }
+
+  public getOnboardStream(): MediaStream | null {
+    return this.onboardMediaStream;
   }
 
   public stepZoom(delta: number) {

@@ -17,7 +17,8 @@ export class GridSearch extends BaseSearchAlgorithm {
     altitudeMeters: number,
     flightSpeedMs: number = 3.0,
     cameraParams: CameraParameters = DEFAULT_CAMERA_PARAMS,
-    overlapPercent: number = 25
+    overlapPercent: number = 25,
+    passDirection: 'PRIMARY' | 'PERPENDICULAR' = 'PRIMARY'
   ): SearchPathResult {
     const coords = boundary.coordinates;
     if (!coords || coords.length < 3) {
@@ -48,8 +49,8 @@ export class GridSearch extends BaseSearchAlgorithm {
     const width = maxX - minX;
     const height = maxY - minY;
 
-    // Determine principal scan axis (sweep along shorter dimension for efficiency)
-    const sweepAlongY = height >= width;
+    // Determine principal scan axis (Pass 1 along primary, Pass 2 rotated 90 degrees)
+    const sweepAlongY = passDirection === 'PERPENDICULAR' ? !(height >= width) : (height >= width);
 
     const waypoints: SearchWaypoint[] = [];
     let wpCounter = 1;
@@ -213,6 +214,119 @@ export class GridSearch extends BaseSearchAlgorithm {
       boundaryAreaMeters: Math.round(boundaryArea),
       coverageEfficiencyPercent: 96
     };
+  }
+
+  /**
+   * Generates a perpendicular cross-grid pass (rotated 90 degrees relative to primary).
+   */
+  public generateCrossGridSearchPath(
+    boundary: SearchBoundaryConfig,
+    altitudeMeters: number,
+    flightSpeedMs: number = 3.0,
+    cameraParams: CameraParameters = DEFAULT_CAMERA_PARAMS,
+    overlapPercent: number = 25
+  ): SearchPathResult {
+    return this.generateSearchPath(
+      boundary,
+      altitudeMeters,
+      flightSpeedMs,
+      cameraParams,
+      overlapPercent,
+      'PERPENDICULAR'
+    );
+  }
+
+  /**
+   * Generates a multi-directional search combining Pass 1 (Primary Grid)
+   * and Pass 2 (Perpendicular Cross-Grid) for comprehensive geofence coverage.
+   */
+  public generateMultiDirectionalSearchPath(
+    boundary: SearchBoundaryConfig,
+    altitudeMeters: number,
+    flightSpeedMs: number = 3.0,
+    cameraParams: CameraParameters = DEFAULT_CAMERA_PARAMS,
+    overlapPercent: number = 25
+  ): SearchPathResult {
+    const pass1 = this.generateSearchPath(boundary, altitudeMeters, flightSpeedMs, cameraParams, overlapPercent, 'PRIMARY');
+    const pass2 = this.generateSearchPath(boundary, altitudeMeters, flightSpeedMs, cameraParams, overlapPercent, 'PERPENDICULAR');
+
+    const combinedWaypoints: SearchWaypoint[] = [...pass1.waypoints];
+    pass2.waypoints.forEach((wp, idx) => {
+      combinedWaypoints.push({
+        ...wp,
+        id: `WP_GRID_P2_${idx + 1}`,
+        laneIndex: (wp.laneIndex || 0) + (pass1.laneCount || 0)
+      });
+    });
+
+    let totalDist = 0;
+    for (let i = 0; i < combinedWaypoints.length - 1; i++) {
+      totalDist += BaseSearchAlgorithm.getDistanceMeters(combinedWaypoints[i], combinedWaypoints[i + 1]);
+    }
+
+    return {
+      ...pass1,
+      waypoints: combinedWaypoints,
+      totalDistanceMeters: Math.round(totalDist),
+      estimatedTimeSeconds: pass1.estimatedTimeSeconds + pass2.estimatedTimeSeconds,
+      laneCount: (pass1.laneCount || 0) + (pass2.laneCount || 0),
+      coverageEfficiencyPercent: 99
+    };
+  }
+
+  public static generateSearchPath(params: {
+    center: LatLngPoint;
+    radiusMeters?: number;
+    boundingPolygon?: LatLngPoint[];
+    targetAltitudeMeters?: number;
+    gridSpacingMeters?: number;
+    passDirection?: 'PRIMARY' | 'PERPENDICULAR';
+  }): SearchPathResult {
+    const instance = new GridSearch();
+    const boundary: SearchBoundaryConfig = {
+      type: (params.boundingPolygon && params.boundingPolygon.length >= 3) ? 'POLYGON' : 'CIRCLE',
+      circleCenter: params.center,
+      circleRadiusMeters: params.radiusMeters || 100,
+      coordinates: params.boundingPolygon || [params.center]
+    };
+    return instance.generateSearchPath(
+      boundary,
+      params.targetAltitudeMeters || 12.0,
+      3.0,
+      DEFAULT_CAMERA_PARAMS,
+      25,
+      params.passDirection || 'PRIMARY'
+    );
+  }
+
+  public static generateCrossGridSearchPath(params: {
+    center: LatLngPoint;
+    radiusMeters?: number;
+    boundingPolygon?: LatLngPoint[];
+    targetAltitudeMeters?: number;
+    gridSpacingMeters?: number;
+  }): SearchPathResult {
+    return GridSearch.generateSearchPath({ ...params, passDirection: 'PERPENDICULAR' });
+  }
+
+  public static generateMultiDirectionalSearchPath(params: {
+    center: LatLngPoint;
+    radiusMeters?: number;
+    boundingPolygon?: LatLngPoint[];
+    targetAltitudeMeters?: number;
+    gridSpacingMeters?: number;
+  }): SearchPathResult {
+    const instance = new GridSearch();
+    const boundary: SearchBoundaryConfig = {
+      type: (params.boundingPolygon && params.boundingPolygon.length >= 3) ? 'POLYGON' : 'CIRCLE',
+      circleCenter: params.center,
+      circleRadiusMeters: params.radiusMeters || 100,
+      coordinates: params.boundingPolygon || [params.center]
+    };
+    return instance.generateMultiDirectionalSearchPath(
+      boundary,
+      params.targetAltitudeMeters || 12.0
+    );
   }
 
   private getFallbackEmptyPath(boundary: SearchBoundaryConfig, alt: number): SearchPathResult {

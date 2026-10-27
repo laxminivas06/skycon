@@ -74,6 +74,7 @@ export interface QRDetectionRecord {
   thumbnailDataUrl?: string; // Optimized thumbnail for fast streaming
   payload: string | null;
   payloadType: QRPayloadType;
+  twoDigitCode?: string;
   targetLocation: TargetLocation | null;
   isTargetLocationConfirmed: boolean;
 

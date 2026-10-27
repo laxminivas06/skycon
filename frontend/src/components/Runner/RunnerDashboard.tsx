@@ -117,10 +117,11 @@ export const RunnerDashboard: React.FC<RunnerDashboardProps> = ({
   // 2. Synchronize with ReconDetectionService (WebSockets & REST Relay)
   useEffect(() => {
     const unsubRecon = reconDetectionService.subscribeDetections((list, latest) => {
-      if (latest && latest.payload && latest.payload.trim().length > 0) {
+      if (latest && (latest.twoDigitCode || (latest.payload && latest.payload.trim().length > 0))) {
         if (latest.detectionId !== lastProcessedIdRef.current) {
           lastProcessedIdRef.current = latest.detectionId;
-          setReceivedCode(latest.payload);
+          const displayCode = latest.twoDigitCode || latest.payload || '';
+          setReceivedCode(displayCode);
           setLatestRecord(latest);
           setReceiptTimestamp(latest.timestamp || Date.now());
           setAckDispatched(true);
@@ -137,11 +138,12 @@ export const RunnerDashboard: React.FC<RunnerDashboardProps> = ({
         const res = await fetch('/api/recon/detections/latest');
         if (res.ok) {
           const data = await res.json();
-          if (data.success && data.detection && data.detection.payload) {
+          if (data.success && data.detection && (data.detection.twoDigitCode || data.detection.payload)) {
             const det = data.detection as QRDetectionRecord;
             if (det.detectionId !== lastProcessedIdRef.current) {
               lastProcessedIdRef.current = det.detectionId;
-              setReceivedCode(det.payload);
+              const displayCode = det.twoDigitCode || det.payload || '';
+              setReceivedCode(displayCode);
               setLatestRecord(det);
               setReceiptTimestamp(det.timestamp || Date.now());
               setAckDispatched(true);

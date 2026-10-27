@@ -131,6 +131,48 @@ export const PhoneDroneDashboard: React.FC = () => {
     onConfirm: () => {}
   });
 
+  // Persistent Decoded 2-Digit QR Target Banner State
+  const [decodedBanner, setDecodedBanner] = useState<{
+    twoDigitCode: string;
+    rawPayload?: string;
+    lat: number;
+    lon: number;
+    timestamp: number;
+    snapshotUrl?: string;
+    flightMode?: string;
+  } | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const code = localStorage.getItem('drone_last_two_digit_code');
+      const targetStr =
+        localStorage.getItem('drone_last_two_digit_target') ||
+        localStorage.getItem('drone_last_decoded_qr');
+      if (code) {
+        let lat = 0, lon = 0, timestamp = Date.now(), snapshotUrl = undefined, rawPayload = code;
+        if (targetStr) {
+          try {
+            const parsed = JSON.parse(targetStr);
+            lat = parsed.estimatedTargetLocation?.targetLatitude || parsed.lat || parsed.dronePosition?.lat || 0;
+            lon = parsed.estimatedTargetLocation?.targetLongitude || parsed.lon || parsed.dronePosition?.lon || 0;
+            timestamp = parsed.timestamp || Date.now();
+            snapshotUrl = parsed.thumbnailDataUrl || parsed.snapshot || parsed.snapshotBase64;
+            rawPayload = parsed.payload || code;
+          } catch {}
+        }
+        return {
+          twoDigitCode: code,
+          rawPayload,
+          lat,
+          lon,
+          timestamp,
+          snapshotUrl,
+          flightMode: 'RTL'
+        };
+      }
+    } catch {}
+    return null;
+  });
+
   // Camera video and canvas refs for real-time processing
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -142,6 +184,19 @@ export const PhoneDroneDashboard: React.FC = () => {
       setProgress(p);
       if (p.activeTarget) {
         setLastVerifiedTarget(p.activeTarget);
+      }
+      if (p.decodedTwoDigitCode) {
+        const target = p.activeTarget;
+        const liveTelem = mavlinkService.getTelemetry();
+        setDecodedBanner({
+          twoDigitCode: p.decodedTwoDigitCode,
+          rawPayload: target?.payload || p.decodedTwoDigitCode,
+          lat: target?.estimatedTargetLocation?.targetLatitude || liveTelem.latitude || 0,
+          lon: target?.estimatedTargetLocation?.targetLongitude || liveTelem.longitude || 0,
+          timestamp: target?.timestamp || Date.now(),
+          snapshotUrl: target?.thumbnailDataUrl,
+          flightMode: p.telemetryHealth.flightMode || 'RTL'
+        });
       }
     });
     return () => { unsub(); };
@@ -214,16 +269,32 @@ export const PhoneDroneDashboard: React.FC = () => {
 
     startCamera();
 
-    // Continuous Frame Processing Loop
+    // Continuous Frame Processing Loop with Adaptive FPS Governor & Zero-Copy Canvas Cache
+    let lastFrameTime = 0;
     const processLoop = async () => {
       if (!isMounted) return;
+
+      const now = performance.now();
+      const currMission = phoneDroneMissionService.getProgress();
+      // Adaptive FPS Governor: 20 FPS (50ms) during VERIFYING hover, 15 FPS (66ms) during SEARCHING, 10 FPS (100ms) idle
+      const targetInterval = currMission.state === 'VERIFYING' ? 50 : (currMission.state === 'SEARCHING' ? 66 : 100);
+      if (now - lastFrameTime < targetInterval) {
+        animFrameRef.current = requestAnimationFrame(processLoop);
+        return;
+      }
+      lastFrameTime = now;
 
       const video = videoRef.current;
       const canvas = canvasRef.current;
 
       if (video && canvas && video.readyState >= 2) {
-        canvas.width = video.videoWidth || 640;
-        canvas.height = video.videoHeight || 480;
+        const targetW = video.videoWidth || 640;
+        const targetH = video.videoHeight || 480;
+        if (canvas.width !== targetW || canvas.height !== targetH) {
+          canvas.width = targetW;
+          canvas.height = targetH;
+        }
+
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         if (ctx) {
           const tFrameStart = performance.now();
@@ -247,10 +318,13 @@ export const PhoneDroneDashboard: React.FC = () => {
           phoneDeviceService.updateLuminanceForAutoTorch(result.quality.meanLuminance);
 
           // Real-time Ground Anomaly / Object Detection & Whole-Area Snapshot Capture during SEARCHING
-          const currMission = phoneDroneMissionService.getProgress();
           if (currMission.state === 'SEARCHING' && result.quality.blurScore >= 60) {
-            const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const contour = targetDetectionEngine.detectSalientGroundContour(imgData, result.quality);
+            // Priority 1: Cuboid Box candidate from unified processFrame
+            // Priority 2: Salient ground contour fallback (reusing rawImageData without re-querying ctx.getImageData)
+            const contour = result.cuboidBox?.bboxNormalized || (result.rawImageData
+              ? targetDetectionEngine.detectSalientGroundContour(result.rawImageData, result.quality)
+              : null);
+
             if (contour) {
               const snap = targetDetectionEngine.captureAreaSnapshot({
                 canvas,
@@ -264,7 +338,8 @@ export const PhoneDroneDashboard: React.FC = () => {
                   hdop: telem.gps.hdop
                 },
                 bboxNormalized: contour,
-                sharpness: result.quality.blurScore
+                sharpness: result.quality.blurScore,
+                candidateType: result.cuboidBox ? 'CUBOID_BOX' : 'GROUND_CONTOUR'
               });
               if (snap) {
                 targetDetectionEngine.scanCapturedImagesForQR();
@@ -417,6 +492,80 @@ export const PhoneDroneDashboard: React.FC = () => {
           })()}
         </div>
       </header>
+
+      {/* PROMINENT PERSISTENT 2-DIGIT QR CODE HUD BANNER */}
+      {decodedBanner && (
+        <div className="w-full bg-gradient-to-r from-emerald-950/95 via-black/95 to-emerald-950/95 border-b-2 border-emerald-400 p-3 sm:p-5 shadow-[0_0_50px_rgba(16,185,129,0.45)] flex flex-col md:flex-row items-center justify-between gap-4 z-40 animate-in fade-in slide-in-from-top-4 duration-300">
+          <div className="flex flex-col sm:flex-row items-center gap-4 sm:gap-6 w-full md:w-auto">
+            {/* Massive 80px Neon-Green 2-Digit Badge */}
+            <div className="flex flex-col items-center justify-center bg-black/90 px-6 py-2 rounded-2xl border-2 border-emerald-400 shadow-[0_0_35px_rgba(52,211,153,0.6)] min-w-[160px]">
+              <span className="text-[10px] font-mono font-bold tracking-widest text-emerald-400 uppercase">
+                QR TARGET DECODED
+              </span>
+              <span className="text-6xl sm:text-7xl md:text-8xl font-orbitron font-black text-emerald-400 tracking-wider drop-shadow-[0_0_25px_rgba(52,211,153,0.9)] leading-none my-1">
+                {decodedBanner.twoDigitCode}
+              </span>
+              <span className="text-[10px] font-mono text-emerald-500/80">
+                RAW: {decodedBanner.rawPayload || decodedBanner.twoDigitCode}
+              </span>
+            </div>
+
+            <div className="flex flex-col gap-1.5 text-center sm:text-left">
+              <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
+                <span className="px-3 py-1 rounded-full bg-emerald-500 text-black text-xs font-black font-orbitron tracking-wider flex items-center gap-1.5 shadow-md shadow-emerald-500/40 animate-pulse">
+                  <CheckCircle2 className="w-4 h-4" />
+                  CUBOID BOX TARGET ACQUIRED
+                </span>
+                <span className="px-3 py-1 rounded-full bg-blue-500/20 border border-blue-400/50 text-blue-300 text-xs font-mono font-bold">
+                  AUTOPILOT: {decodedBanner.flightMode || 'RTL (AUTO-RETURN)'}
+                </span>
+              </div>
+              <div className="text-xs sm:text-sm font-mono text-slate-200 mt-1">
+                <span className="text-slate-400">GROUND TARGET GPS:</span>{' '}
+                <span className="text-emerald-300 font-bold bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-500/30">
+                  {decodedBanner.lat.toFixed(6)}°, {decodedBanner.lon.toFixed(6)}°
+                </span>
+              </div>
+              <div className="text-[11px] font-mono text-slate-400 flex items-center justify-center sm:justify-start gap-2">
+                <span>TIME: {new Date(decodedBanner.timestamp).toLocaleTimeString()}</span>
+                <span>•</span>
+                <span className="text-emerald-400 font-bold">RETURN TO LAUNCH ACTIVE</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Target Box Snapshot & Dismiss Controls */}
+          <div className="flex items-center gap-3 w-full md:w-auto justify-end">
+            {decodedBanner.snapshotUrl && (
+              <div className="relative group w-20 h-20 sm:w-24 sm:h-24 rounded-lg overflow-hidden border-2 border-emerald-400 bg-black shadow-lg flex-shrink-0">
+                <img
+                  src={decodedBanner.snapshotUrl}
+                  alt="Decoded Box Target"
+                  className="w-full h-full object-cover"
+                />
+                <div className="absolute inset-0 bg-emerald-500/15 pointer-events-none" />
+                <span className="absolute bottom-0.5 right-0.5 text-[8px] font-mono font-bold px-1 rounded bg-black/85 text-emerald-300">
+                  BOX CROP
+                </span>
+              </div>
+            )}
+            <button
+              onClick={() => {
+                try {
+                  localStorage.removeItem('drone_last_two_digit_code');
+                  localStorage.removeItem('drone_last_two_digit_target');
+                  localStorage.removeItem('drone_last_decoded_qr');
+                } catch {}
+                setDecodedBanner(null);
+              }}
+              title="Dismiss decoded target banner"
+              className="px-3 py-2 rounded-lg bg-slate-900/90 hover:bg-slate-800 text-slate-400 hover:text-white text-xs font-mono border border-slate-700 transition"
+            >
+              DISMISS
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* MISSION STATE & COMMAND CONFIRMATION BANNER */}
       <div className="px-3 sm:px-6 py-2 bg-[#0d1627] border-b border-slate-800/60 flex flex-wrap items-center justify-between gap-2 text-xs">

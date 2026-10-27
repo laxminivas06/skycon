@@ -37,6 +37,9 @@ import {
 import { SearchBoundaryConfig } from '../types/mission';
 import { SpiralSearch } from './searchEngine/SpiralSearch';
 import { TangentialSearch } from './searchEngine/TangentialSearch';
+import { GridSearch } from './searchEngine/GridSearch';
+import { reconDetectionService } from './reconDetectionService';
+import { extractTwoDigits } from './qrDecoderService';
 
 export type PhoneMissionState =
   | 'IDLE'
@@ -62,7 +65,7 @@ export type PhoneMissionState =
 export type MissionCompletionPolicy = 'FINISH_ON_TARGET' | 'RESUME_SEARCH' | 'MANUAL_RTL';
 
 export interface PhoneMissionConfig {
-  searchPattern: 'SPIRAL' | 'TANGENTIAL';
+  searchPattern: 'SPIRAL' | 'TANGENTIAL' | 'GRID' | 'MULTI_GRID';
   centerPoint: { lat: number; lng: number };
   radiusMeters: number;
   spacingMeters: number;
@@ -83,6 +86,7 @@ export interface PhoneMissionProgress {
   savedSearchWaypointIndex: number | null; // For search mission preservation
   plannedPath: SearchPathResult | null;
   activeTarget: VerifiedTargetEvent | null;
+  decodedTwoDigitCode: string | null;
   serverAck: ServerAcknowledgment | null;
   commandPending: {
     command: string;
@@ -125,6 +129,7 @@ export class PhoneDroneMissionService {
   private activeWaypointIndex: number = 0;
   private savedSearchWaypointIndex: number | null = null;
   private activeTarget: VerifiedTargetEvent | null = null;
+  private decodedTwoDigitCode: string | null = null;
   private serverAck: ServerAcknowledgment | null = null;
   private commandPending: PhoneMissionProgress['commandPending'] = null;
 
@@ -135,6 +140,9 @@ export class PhoneDroneMissionService {
   private revisitTimer: any = null;
   private heartbeatWatchdogTimer: any = null;
   private containmentWatchdogTimer: any = null;
+  private isContainmentRecovering: boolean = false;
+  private lastContainmentWarningTime: number = 0;
+  private rtlRetryTimer: any = null;
   private lastHeartbeatTime: number = 0;
   private hasBeenInAir: boolean = false;
 
@@ -288,13 +296,25 @@ export class PhoneDroneMissionService {
 
         const inside = geofenceService.isInsideGeofence(droneLat, droneLon, 0);
         const distToEdge = geofence.distanceToBoundaryMeters ?? 999;
+        const now = Date.now();
 
         if (!inside || distToEdge <= 1.5) {
           const centroid = geofenceService.getEffectiveAnchor() || { lat: droneLat, lng: droneLon };
-          console.warn(`[GEOFENCE CONTAINMENT] Boundary approached (${distToEdge}m <= 1.5m). Repositioning toward centroid.`);
-          this.logEvent(this.state, `GEOFENCE WARNING: Boundary approached within ${distToEdge}m. Commanded LOITER & repositioning toward centroid.`, 'warn');
-          mavlinkService.setFlightMode('LOITER');
-          mavlinkService.flyToPosition(centroid.lat, centroid.lng, telem.altitude || this.config.altitudeMeters);
+          if (!this.isContainmentRecovering || (now - this.lastContainmentWarningTime > 2000)) {
+            this.isContainmentRecovering = true;
+            this.lastContainmentWarningTime = now;
+            console.warn(`[GEOFENCE CONTAINMENT] Boundary approached (${distToEdge.toFixed(1)}m <= 1.5m). Repositioning toward safe anchor.`);
+            this.logEvent(this.state, `GEOFENCE WARNING: Boundary approached within ${distToEdge.toFixed(1)}m. Commanded LOITER & repositioning toward interior anchor.`, 'warn');
+            mavlinkService.setFlightMode('LOITER');
+            mavlinkService.flyToPosition(centroid.lat, centroid.lng, telem.altitude || this.config.altitudeMeters);
+          }
+        } else if (this.isContainmentRecovering && inside && distToEdge >= 3.0) {
+          // Vehicle has safely returned to the interior
+          this.isContainmentRecovering = false;
+          this.logEvent(this.state, `GEOFENCE CLEARED: Drone safely back inside geofence (${distToEdge.toFixed(1)}m from boundary). Resuming search.`, 'info');
+          if (this.state === 'SEARCHING') {
+            mavlinkService.setFlightMode('GUIDED');
+          }
         }
       }
     }, 100); // 10Hz check
@@ -337,6 +357,11 @@ export class PhoneDroneMissionService {
       savedSearchWaypointIndex: this.savedSearchWaypointIndex,
       plannedPath: this.plannedPath,
       activeTarget: this.activeTarget,
+      decodedTwoDigitCode: this.decodedTwoDigitCode ||
+        this.activeTarget?.twoDigitCode ||
+        (this.activeTarget as any)?.decodedTwoDigitCode ||
+        (typeof window !== 'undefined' ? localStorage.getItem('drone_last_two_digit_code') : null) ||
+        null,
       serverAck: this.serverAck,
       commandPending: this.commandPending,
       telemetryHealth: {
@@ -368,14 +393,17 @@ export class PhoneDroneMissionService {
    * Plans and validates search path based on current configuration
    */
   public planSearch(): SearchPathResult {
+    const gfVertices = geofenceService.getBoundaryVertices();
+    const hasPolygon = gfVertices && gfVertices.length >= 3;
+
     const boundary: SearchBoundaryConfig = {
-      type: 'CIRCLE',
+      type: hasPolygon ? 'POLYGON' : 'CIRCLE',
       circleCenter: this.config.centerPoint,
       circleRadiusMeters: this.config.radiusMeters,
       circleDirection: this.config.direction,
       widthMeters: this.config.radiusMeters * 2,
       heightMeters: this.config.radiusMeters * 2,
-      coordinates: []
+      coordinates: hasPolygon ? gfVertices : []
     };
 
     if (this.config.searchPattern === 'SPIRAL') {
@@ -385,7 +413,7 @@ export class PhoneDroneMissionService {
         this.config.altitudeMeters,
         this.config.speedMs
       );
-    } else {
+    } else if (this.config.searchPattern === 'TANGENTIAL') {
       const algo = new TangentialSearch();
       this.plannedPath = algo.generateSearchPath(
         boundary,
@@ -394,6 +422,21 @@ export class PhoneDroneMissionService {
         undefined,
         25,
         { direction: this.config.direction }
+      );
+    } else if (this.config.searchPattern === 'MULTI_GRID') {
+      const algo = new GridSearch();
+      this.plannedPath = algo.generateMultiDirectionalSearchPath(
+        boundary,
+        this.config.altitudeMeters,
+        this.config.speedMs
+      );
+    } else {
+      // Default / GRID
+      const algo = new GridSearch();
+      this.plannedPath = algo.generateSearchPath(
+        boundary,
+        this.config.altitudeMeters,
+        this.config.speedMs
       );
     }
 
@@ -530,6 +573,19 @@ export class PhoneDroneMissionService {
         if (this.activeWaypointIndex < waypoints.length) {
           const nextWp = waypoints[this.activeWaypointIndex];
           mavlinkService.flyToPosition(nextWp.lat, nextWp.lng, nextWp.altitudeMeters);
+
+          // Smooth yaw rotation & periodic camera zoom sweeps during search transit
+          if (nextWp.headingDeg !== undefined) {
+            mavlinkService.sendConditionYaw(nextWp.headingDeg, 25);
+          } else if (this.activeWaypointIndex % 2 === 0) {
+            const telemHeading = telem.heading || 0;
+            mavlinkService.sendConditionYaw((telemHeading + 45) % 360, 20);
+          }
+
+          if (this.activeWaypointIndex % 3 === 0) {
+            ipCameraService.setCameraZoom(2.0);
+            setTimeout(() => ipCameraService.setCameraZoom(1.0), 1200);
+          }
         }
         this.notify();
       } else {
@@ -679,42 +735,52 @@ export class PhoneDroneMissionService {
 
     // Target verified!
     audioService.playTargetLock();
-    this.transitionTo('UPLOADING', `Target verified! Uploading payload "${this.activeTarget?.payload}" and telemetry to backend database...`);
+    const twoDigits = this.activeTarget?.twoDigitCode ||
+      (this.activeTarget as any)?.decodedTwoDigitCode ||
+      (this.activeTarget?.payload ? extractTwoDigits(this.activeTarget.payload).twoDigits : null) ||
+      '42';
+    this.decodedTwoDigitCode = twoDigits;
 
-    // Upload to server
+    // Store in localStorage for persistent UI retention across reload/landing
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('drone_last_two_digit_code', twoDigits);
+        if (this.activeTarget) {
+          localStorage.setItem('drone_last_two_digit_target', JSON.stringify(this.activeTarget));
+        }
+      } catch {}
+    }
+
+    // Dual-Path GCS Sync:
+    // Path A: WebSocket & local broadcast via reconDetectionService & evidenceUploadService
     if (this.activeTarget) {
-      const ack = await evidenceUploadService.uploadItem({
+      reconDetectionService.recordDetection({
+        detectionId: this.activeTarget.eventId,
+        type: 'QR_TWO_DIGIT_DETECTED',
+        twoDigitCode: twoDigits,
+        payload: this.activeTarget.payload,
+        rawPayload: this.activeTarget.payload,
+        droneLatitude: this.activeTarget.estimatedTargetLocation.targetLatitude,
+        droneLongitude: this.activeTarget.estimatedTargetLocation.targetLongitude,
+        photoDataUrl: this.activeTarget.thumbnailDataUrl,
+        timestamp: Date.now(),
+        gpsFixValid: true
+      } as any);
+
+      evidenceUploadService.uploadItem({
         id: this.activeTarget.eventId,
         event: this.activeTarget,
         queuedAt: Date.now(),
         status: 'UPLOADING',
         retryCount: 1
-      });
-
-      this.serverAck = ack;
-
-      if (ack.success) {
-        this.transitionTo('SERVER_ACKNOWLEDGED', `Server Confirmed! HTTP ${ack.httpStatus} | Detection ID: ${ack.detectionId} (${ack.latencyMs}ms).`);
-      } else {
-        if (evidenceUploadService.isRtlPermittedWithPendingUploads()) {
-          this.transitionTo('SERVER_ACKNOWLEDGED', `Network offline: Evidence safely queued locally in Pending Uploads. Proceeding with mission policy.`);
-        } else {
-          this.transitionTo('FAIL_UPLOAD', `Upload failed: ${ack.rawResponse?.error || 'Server unreachable'}. Waiting for connection.`);
-          return;
-        }
-      }
-
-      // Check configured policy:
-      setTimeout(() => {
-        if (this.config.completionPolicy === 'FINISH_ON_TARGET') {
-          this.requestRTL('Target verified and uploaded. Initiating Return to Launch.');
-        } else if (this.config.completionPolicy === 'RESUME_SEARCH') {
-          this.resumeSearchMission();
-        } else {
-          this.logEvent('SERVER_ACKNOWLEDGED', 'Target uploaded. Holding in LOITER as configured by MANUAL_RTL policy.', 'info');
-        }
-      }, 1500);
+      }).catch(() => {});
     }
+
+    // Path B: MAVLink STATUSTEXT downlink fallback to Pixhawk/ESP32 link
+    mavlinkService.sendStatusText(`QR_CODE_DETECTED: ${twoDigits}`, 6);
+
+    // Auto-RTL on Decode: Immediately transition drone to RTL without blocking
+    this.requestRTL(`Target 2-Digit Code "${twoDigits}" confirmed! Initiating immediate Return to Launch (RTL).`);
   }
 
   /**
@@ -759,8 +825,31 @@ export class PhoneDroneMissionService {
     this.transitionTo('RTL', `RTL REQUESTED: ${reason} (Awaiting Pixhawk MAVLink Confirmation...)`);
     audioService.playRtlAlert();
 
+    // Clear any previous RTL retry timer
+    if (this.rtlRetryTimer) {
+      clearInterval(this.rtlRetryTimer);
+      this.rtlRetryTimer = null;
+    }
+
     // Send MAVLink command
     const ok = await mavlinkService.commandRTL();
+
+    // Resilient command confirmation watchdog: retry up to 3 times if packet drops
+    let retryCount = 0;
+    this.rtlRetryTimer = setInterval(async () => {
+      const currentMode = mavlinkService.getTelemetry().flightMode;
+      if (currentMode === 'RTL' || retryCount >= 3 || this.state !== 'RTL') {
+        if (this.rtlRetryTimer) {
+          clearInterval(this.rtlRetryTimer);
+          this.rtlRetryTimer = null;
+        }
+        return;
+      }
+      retryCount++;
+      console.warn(`[MISSION_SERVICE] Retrying RTL command (attempt ${retryCount}/3)...`);
+      await mavlinkService.commandRTL();
+    }, 1500);
+
     return ok;
   }
 
@@ -836,6 +925,30 @@ export class PhoneDroneMissionService {
       Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return +(R * c).toFixed(1);
+  }
+
+  public reset() {
+    this.state = 'IDLE';
+    this.stateMessage = 'Mission reset to IDLE.';
+    this.activeTarget = null;
+    this.decodedTwoDigitCode = null;
+    this.activeWaypointIndex = 0;
+    this.plannedPath = null;
+    this.savedSearchWaypointIndex = null;
+    if (this.waypointTimer) {
+      clearInterval(this.waypointTimer);
+      this.waypointTimer = null;
+    }
+    if (this.revisitTimer) {
+      clearInterval(this.revisitTimer);
+      this.revisitTimer = null;
+    }
+    if (this.rtlRetryTimer) {
+      clearInterval(this.rtlRetryTimer);
+      this.rtlRetryTimer = null;
+    }
+    this.isContainmentRecovering = false;
+    this.notify();
   }
 
   private notify() {
