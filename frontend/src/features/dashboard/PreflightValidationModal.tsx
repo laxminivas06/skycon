@@ -35,7 +35,7 @@ export interface PreflightCheckItem {
 interface PreflightValidationModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onConfirmLaunch: () => Promise<void>;
+  onConfirmLaunch: (forceBypass?: boolean) => Promise<void>;
   telemetry: DashboardTelemetryData;
   mode: 'MANUAL' | 'AUTONOMOUS';
 }
@@ -49,6 +49,7 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
 }) => {
   const [connState, setConnState] = useState<GCSConnectionState>(() => gcsConnectionService.getState());
   const [isLaunching, setIsLaunching] = useState<boolean>(false);
+  const [bypassPrearm, setBypassPrearm] = useState<boolean>(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -248,14 +249,14 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
   const allCriticalPassed = criticalFailed.length === 0;
 
   const handleLaunch = async () => {
-    if (!allCriticalPassed) return;
+    if (!allCriticalPassed && !bypassPrearm) return;
     setIsLaunching(true);
     setLaunchError(null);
     try {
       if (!home.isSet && telemetry.latitude !== 0 && Math.abs(telemetry.latitude) > 0.001) {
         await mavlinkService.setHomePoint(telemetry.latitude, telemetry.longitude, telemetry.altitudeMeters || 0);
       }
-      await onConfirmLaunch();
+      await onConfirmLaunch(bypassPrearm);
       onClose();
     } catch (err: any) {
       setLaunchError(err?.message || 'Arming or takeoff sequence failed. Check pre-arm conditions.');
@@ -343,14 +344,35 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
             ))}
           </div>
 
-          {!allCriticalPassed && (
+          {/* Optional Pre-Arm Safety Bypass Toggle */}
+          <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-700/80 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <input
+                id="bypass-prearm-checkbox"
+                type="checkbox"
+                checked={bypassPrearm}
+                onChange={(e) => setBypassPrearm(e.target.checked)}
+                className="w-4 h-4 accent-amber-500 rounded cursor-pointer"
+              />
+              <label htmlFor="bypass-prearm-checkbox" className="text-[11px] font-bold text-slate-300 cursor-pointer select-none">
+                Bypass Pre-Arm Checks <span className="text-[10px] font-normal text-amber-400 font-mono">(Field Force Arm: overrides Safety Switch &amp; GPS wait)</span>
+              </label>
+            </div>
+            {bypassPrearm && (
+              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-500/40 uppercase tracking-wide">
+                OVERRIDE ARMED
+              </span>
+            )}
+          </div>
+
+          {!allCriticalPassed && !bypassPrearm && (
             <div className="p-3 rounded-lg bg-amber-950/50 border border-amber-500/50 text-amber-300 text-[11px]">
               <div className="font-bold mb-1 flex items-center gap-1.5">
                 <AlertTriangle className="w-4 h-4 text-amber-400" />
                 <span>Preflight Safety Lock: Launch Blocked</span>
               </div>
               <p className="text-[10.5px] text-amber-200/90 leading-tight">
-                {criticalFailed.length} critical safety check(s) failed. All required conditions must be satisfied before Pixhawk motors can be armed.
+                {criticalFailed.length} critical safety check(s) failed. Satisfy conditions or check &quot;Bypass Pre-Arm Checks&quot; to force arm Pixhawk.
               </p>
             </div>
           )}
@@ -387,9 +409,9 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
             <button
               type="button"
               onClick={handleLaunch}
-              disabled={!allCriticalPassed || isLaunching}
+              disabled={(!allCriticalPassed && !bypassPrearm) || isLaunching}
               className={`flex items-center gap-2 px-5 py-2 rounded-lg font-bold text-[12px] tracking-wider uppercase transition shadow-lg cursor-pointer ${
-                allCriticalPassed && !isLaunching
+                (allCriticalPassed || bypassPrearm) && !isLaunching
                   ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-950/50 ring-1 ring-emerald-400'
                   : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
               }`}

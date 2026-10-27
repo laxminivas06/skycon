@@ -461,13 +461,9 @@ async function runAllTests() {
       heading: 45
     },
     bboxNormalized: { nx: 0.4, ny: 0.4, w: 0.2, h: 0.2 },
-    sharpness: 95.0
+    sharpness: 95.0,
+    qrPayload: 'AERORECON_ALPHA_01'
   });
-
-  if (candidateImg) {
-    candidateImg.scanStatus = 'PENDING_QR_SCAN';
-    candidateImg.qrPayload = 'AERORECON_ALPHA_01';
-  }
 
   // Execute background scanner
   await targetDetectionEngine.scanCapturedImagesForQR();

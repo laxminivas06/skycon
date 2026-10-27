@@ -350,12 +350,14 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
     audioService.playBeep(900, 100);
   };
 
-  const confirmArmAndLaunch = async () => {
-    const geofenceCheck = geofenceService.canArmVehicle(telemetry.latitude, telemetry.longitude);
-    if (!geofenceCheck.canArm) {
-      audioService.playBeep(350, 200);
-      showNotification(`❌ ${geofenceCheck.reason}`);
-      return;
+  const confirmArmAndLaunch = async (forceBypass: boolean = false) => {
+    if (!forceBypass) {
+      const geofenceCheck = geofenceService.canArmVehicle(telemetry.latitude, telemetry.longitude);
+      if (!geofenceCheck.canArm) {
+        audioService.playBeep(350, 200);
+        showNotification(`❌ ${geofenceCheck.reason}`);
+        return;
+      }
     }
     setShowPreflightModal(false);
     showNotification(`Arming flight controller and starting ${missionMode} mission...`);
@@ -365,14 +367,14 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       let statusMsg = '';
 
       if (currentMission && currentMission.waypoints && currentMission.waypoints.length > 0) {
-        const res = await groundStationMissionService.startGroundStationMission(false);
+        const res = await groundStationMissionService.startGroundStationMission(forceBypass);
         started = res.success;
         statusMsg = res.message;
       } else if (missionEngine?.startMission) {
         started = missionEngine.startMission();
         statusMsg = started ? `Autonomous ${missionMode} mission commenced` : 'Mission pre-flight checks rejected arming';
       } else {
-        const armSuccess = await mavlinkService.sendArmCommand(false);
+        const armSuccess = await mavlinkService.sendArmCommand(forceBypass);
         if (armSuccess) {
           await mavlinkService.setFlightMode('AUTO');
           started = true;

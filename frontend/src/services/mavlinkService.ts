@@ -2982,6 +2982,37 @@ class MAVLinkService {
     return this.commandVerticalAltitude(newAlt);
   }
 
+  /**
+   * Set current active mission waypoint item (MAVLink message #41 MISSION_SET_CURRENT & CMD #224)
+   */
+  public async setCurrentMissionItem(seq: number = 1): Promise<boolean> {
+    const isConnected = this.connectionState.isConnected || this.connectionState.isUsbConnected;
+    if (!isConnected && !this.simInterval) {
+      return false;
+    }
+    this.logDiagnostic('MAVLINK', `Setting current mission item sequence to ${seq}`, 'info');
+    if (this.connectionState.isRealHardware || isConnected) {
+      const isMav2 = this.connectionState.mavlinkVersion === 'MAVLink 2.0';
+      const targetSys = this.connectionState.systemId || 1;
+      const targetComp = this.connectionState.componentId || 1;
+
+      // 1. MAVLink message #41 (MISSION_SET_CURRENT)
+      const payload = new Uint8Array(4);
+      const view = new DataView(payload.buffer);
+      view.setUint16(0, seq, true);
+      view.setUint8(2, targetSys);
+      view.setUint8(3, targetComp);
+      const packet = isMav2 ? this.buildMavlink2Frame(41, payload) : this.buildMavlink1Frame(41, payload);
+      await usbHostService.sendBytes(packet);
+
+      // 2. Also send COMMAND_LONG 224 (MAV_CMD_DO_SET_MISSION_CURRENT) as standard redundant fallback
+      await this.sendMavlinkCommandLong(224 /* MAV_CMD_DO_SET_MISSION_CURRENT */, seq);
+      return true;
+    } else {
+      return true;
+    }
+  }
+
   public async commandStartMission(): Promise<boolean> {
     const isConnected = this.connectionState.isConnected || this.connectionState.isUsbConnected;
     if (!isConnected && !this.simInterval) {
@@ -2990,8 +3021,10 @@ class MAVLinkService {
     }
     this.addStatusMessage('NOTICE', 5, 'Sending MAVLink MISSION_START Command to Pixhawk FC...');
     if (this.connectionState.isRealHardware || isConnected) {
+      await this.setCurrentMissionItem(1);
       await this.setFlightMode('AUTO');
-      await this.sendMavlinkCommandLong(300 /* MAV_CMD_MISSION_START */, 0, 0, 0, 0, 0, 0, 0);
+      // MAV_CMD_MISSION_START (300): param1 = first_item (1 to start from item 1 takeoff)
+      await this.sendMavlinkCommandLong(300 /* MAV_CMD_MISSION_START */, 1.0, 0, 0, 0, 0, 0, 0);
       return true;
     } else {
       this.telemetry.flightMode = 'AUTO';

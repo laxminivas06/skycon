@@ -94,9 +94,9 @@ export class Esp32WebSocketTransport implements MavlinkTransport {
   private isConnecting: boolean = false;
   private manualDisconnect: boolean = false;
 
-  // Reconnect management (guaranteed single timer)
+  // Reconnect management (guaranteed single timer, continuous recovery)
   private reconnectAttempts: number = 0;
-  private readonly maxReconnectAttempts: number = 5;
+  private readonly maxReconnectAttempts: number = 50;
   private reconnectTimer: any = null;
   private connectTimeoutTimer: any = null;
 
@@ -845,40 +845,23 @@ export class Esp32WebSocketTransport implements MavlinkTransport {
           // Connection dropped unexpectedly -> Start reconnection sequence
           this.linkState = 'RECONNECTING';
 
-          if (this.reconnectAttempts < this.maxReconnectAttempts) {
-            this.reconnectAttempts++;
-            const delays = [1000, 2000, 3000, 5000, 8000];
-            const delay = delays[this.reconnectAttempts - 1] || 5000;
+          this.reconnectAttempts++;
+          const delay = Math.min(4000, 1000 + Math.min(this.reconnectAttempts, 6) * 500);
 
-            const reconMsg = `[WS] Connection lost. Reconnecting (${this.reconnectAttempts}/${this.maxReconnectAttempts}) in ${delay / 1000}s…`;
-            console.log(reconMsg);
+          const reconMsg = `[WS] Connection lost. Reconnecting (attempt #${this.reconnectAttempts}) in ${delay / 1000}s…`;
+          console.log(reconMsg);
 
-            this.notifyState({
-              phase: 'WAITING_FOR_MAVLINK',
-              message: reconMsg
-            });
+          this.notifyState({
+            phase: 'WAITING_FOR_MAVLINK',
+            message: reconMsg
+          });
 
-            // Single reconnect timer guarantee
-            this.reconnectTimer = setTimeout(() => {
-              if (!this.manualDisconnect) {
-                this.attemptConnection(this.currentProtocol);
-              }
-            }, delay);
-          } else {
-            this.linkState = 'ERROR';
-            this.errorCategory = protocolToTry === 'wss' ? 'RELAY_UNAVAILABLE' : 'CONNECTION_REFUSED';
-            this.lastErrorMessage = protocolToTry === 'wss'
-              ? 'Secure relay unavailable.'
-              : `ESP32 connection lost. Failed to reconnect after ${this.maxReconnectAttempts} attempts. Press CONNECT to retry.`;
-
-            console.error(this.lastErrorMessage);
-
-            this.notifyState({
-              phase: 'CONNECTION_LOST',
-              message: this.lastErrorMessage,
-              error: 'Max reconnect attempts exceeded'
-            });
-          }
+          // Single reconnect timer guarantee
+          this.reconnectTimer = setTimeout(() => {
+            if (!this.manualDisconnect) {
+              this.attemptConnection(this.currentProtocol);
+            }
+          }, delay);
         };
 
       } catch (err: any) {

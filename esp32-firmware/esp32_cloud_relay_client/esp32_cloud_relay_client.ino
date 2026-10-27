@@ -39,6 +39,8 @@
 #include <ArduinoWebsockets.h>
 #include <time.h>
 #include <sys/time.h>
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
 
 // =====================================================================================
 // 1. WI-FI CONFIGURATION (Phone Hotspot or Field Wi-Fi)
@@ -229,7 +231,8 @@ void onEventsCallback(WebsocketsEvent event, String data) {
     Serial.println("\n🔴 [WSS CLOUD RELAY] Connection closed. Will reconnect automatically...");
     updateLED(0);
   } else if (event == WebsocketsEvent::GotPing) {
-    // Ping acknowledged
+    // Reply with Pong to satisfy server heartbeat and keep connection alive
+    wsClient.pong();
   } else if (event == WebsocketsEvent::GotPong) {
     // Pong received
   }
@@ -295,6 +298,7 @@ void connectToWiFi(bool isInitialSetup = false) {
   if (WiFi.status() == WL_CONNECTED) {
     // Disable ESP32 802.11 modem sleep to eliminate DTIM jitter & keep latency <5ms
     WiFi.setSleep(false);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
     Serial.println("🟢 [WIFI] CONNECTED SUCCESSFULLY!");
     Serial.printf("📍 [WIFI] IP Address:    %s\n", WiFi.localIP().toString().c_str());
     Serial.printf("📶 [WIFI] Signal (RSSI):  %d dBm\n", WiFi.RSSI());
@@ -397,6 +401,9 @@ void connectToCloudRelay() {
 // SETUP
 // =====================================================================================
 void setup() {
+  // Disable brownout detector to prevent reboot loop during peak Wi-Fi transmit bursts on weak TELEM2 power
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+
   // Initialize USB Serial for Monitor
   Serial.begin(115200);
   
@@ -503,8 +510,8 @@ void loop() {
     }
   }
 
-  // Auto-baud switcher: If no valid MAVLink header seen after 7s, test alternate baud (57600 <-> 115200)
-  if (!isBaudLocked && (millis() - lastBaudSwitchTime > 7000)) {
+  // Auto-baud switcher: ONLY if not locked AND zero bytes received after 12s
+  if (!isBaudLocked && totalRxBytesFromPixhawk == 0 && (millis() - lastBaudSwitchTime > 12000)) {
     lastBaudSwitchTime = millis();
     currentBaudIdx = (currentBaudIdx + 1) % 2;
     activePixhawkBaud = TELEM2_BAUDS[currentBaudIdx];

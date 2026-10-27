@@ -856,7 +856,16 @@ function handleConnectorConnection(ws) {
   }
 
   ws.isAlive = true;
-  ws.on('pong', () => { ws.isAlive = true; });
+  ws.lastActiveTime = Date.now();
+  ws.on('pong', () => {
+    ws.isAlive = true;
+    ws.lastActiveTime = Date.now();
+  });
+  ws.on('ping', () => {
+    ws.isAlive = true;
+    ws.lastActiveTime = Date.now();
+    try { ws.pong(noop); } catch (e) {}
+  });
 
   connectorSocket = ws;
   esp32Online = true;
@@ -866,6 +875,8 @@ function handleConnectorConnection(ws) {
   broadcastStatusToBrowsers();
 
   ws.on('message', (data, isBinary) => {
+    ws.isAlive = true;
+    ws.lastActiveTime = Date.now();
     if (isBinary) {
       lastPacketTime = Date.now();
       if (!esp32Online) {
@@ -939,7 +950,16 @@ function handleConnectorConnection(ws) {
 // Handle Browser Frontend connection
 function handleBrowserConnection(ws) {
   ws.isAlive = true;
-  ws.on('pong', () => { ws.isAlive = true; });
+  ws.lastActiveTime = Date.now();
+  ws.on('pong', () => {
+    ws.isAlive = true;
+    ws.lastActiveTime = Date.now();
+  });
+  ws.on('ping', () => {
+    ws.isAlive = true;
+    ws.lastActiveTime = Date.now();
+    try { ws.pong(noop); } catch (e) {}
+  });
 
   browserSockets.add(ws);
   console.log(`[BROWSER] Frontend client connected (Active clients: ${browserSockets.size})`);
@@ -986,6 +1006,8 @@ function handleBrowserConnection(ws) {
   }
 
   ws.on('message', (data, isBinary) => {
+    ws.isAlive = true;
+    ws.lastActiveTime = Date.now();
     if (isBinary) {
       txBytesTotal += data.length;
       
@@ -1068,12 +1090,15 @@ function handleBrowserConnection(ws) {
   });
 }
 
-// Low-latency Heartbeat & Zombie Socket Pruning (Runs every 10 seconds)
+// Low-latency Heartbeat & Zombie Socket Pruning (Runs every 20 seconds, requires >40s silence to prune)
 const heartbeatInterval = setInterval(() => {
+  const now = Date.now();
+
   // 1. Drone / Connector Check
   if (connectorSocket) {
-    if (connectorSocket.isAlive === false) {
-      console.warn('[HEARTBEAT] Connector unresponsive, terminating dead socket.');
+    const silenceMs = now - (connectorSocket.lastActiveTime || now);
+    if (connectorSocket.isAlive === false && silenceMs > 40000) {
+      console.warn(`[HEARTBEAT] Connector unresponsive (${Math.round(silenceMs / 1000)}s silence), terminating dead socket.`);
       connectorSocket.terminate();
       connectorSocket = null;
       esp32Online = false;
@@ -1088,7 +1113,8 @@ const heartbeatInterval = setInterval(() => {
 
   // 2. Active Browsers Check
   for (const client of browserSockets) {
-    if (client.isAlive === false) {
+    const silenceMs = now - (client.lastActiveTime || now);
+    if (client.isAlive === false && silenceMs > 40000) {
       client.terminate();
       browserSockets.delete(client);
     } else {
@@ -1098,7 +1124,7 @@ const heartbeatInterval = setInterval(() => {
       } catch (e) {}
     }
   }
-}, 10000);
+}, 20000);
 
 heartbeatInterval.unref();
 

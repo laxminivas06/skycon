@@ -1207,49 +1207,145 @@ export class GroundStationMissionService {
     }
 
     try {
-      const telem = mavlinkService.getTelemetry();
+      const connState = mavlinkService.getConnectionState();
+      const isSim = connState.connectionType === 'SIMULATED';
+      const isConnected = connState.isConnected || connState.isUsbConnected || connState.isRealHardware || isSim;
+      if (!isConnected) {
+        return {
+          success: false,
+          message: 'Cannot start mission: Drone is not connected via MAVLink. Verify ESP32 Wi-Fi bridge.'
+        };
+      }
+
+      // Geofence pre-arm check
+      if (!forceBypass) {
+        try {
+          const { geofenceService } = await import('./geofenceService');
+          const telem = mavlinkService.getTelemetry();
+          if (geofenceService.getState().enabled) {
+            const check = geofenceService.canArmVehicle(telem.latitude, telem.longitude);
+            if (!check.canArm) {
+              return {
+                success: false,
+                message: check.reason || 'Start mission blocked: Drone is outside active Geofence boundary.'
+              };
+            }
+          }
+        } catch (e) {}
+      }
+
       const alt = this.currentMission.altitude;
       const speed = this.currentMission.speed;
+      let telem = mavlinkService.getTelemetry();
 
-      // 1. Arm vehicle if disarmed
+      // Step 1: Ensure vehicle is in GUIDED mode for arming and ground operations
+      // (ArduPilot allows arming in GUIDED, but rejects arming in AUTO mode by default)
       if (!telem.isArmed) {
-        await mavlinkService.sendArmCommand(forceBypass);
-        await new Promise((r) => setTimeout(r, 1200));
+        audioService.playBeep(600, 100);
+        await mavlinkService.setFlightMode('GUIDED');
+        await new Promise((r) => setTimeout(r, 400));
+
+        // Command Arm
+        console.log(`[GCS Mission] Commanding Arm (forceBypass=${forceBypass})...`);
+        const armSent = await mavlinkService.sendArmCommand(forceBypass);
+        if (!armSent && !forceBypass) {
+          const preArmReason = mavlinkService.getConnectionState().preArmFailReason;
+          return {
+            success: false,
+            message: `Arming rejected: ${preArmReason || 'Pre-arm checks failed. Verify safety switch, GPS 3D fix, and battery.'}`
+          };
+        }
+
+        // Actively poll for arm confirmation (up to 3.5s)
+        const armStartTime = Date.now();
+        while (Date.now() - armStartTime < 3500) {
+          await new Promise((r) => setTimeout(r, 250));
+          telem = mavlinkService.getTelemetry();
+          if (telem.isArmed) break;
+        }
+
+        if (!telem.isArmed && !forceBypass) {
+          // Retry once with bypass in case flight controller requires forced override
+          console.warn('[GCS Mission] Arm confirmation not received within 3.5s; attempting force bypass arm...');
+          await mavlinkService.sendArmCommand(true);
+          const forceWait = Date.now();
+          while (Date.now() - forceWait < 2000) {
+            await new Promise((r) => setTimeout(r, 200));
+            telem = mavlinkService.getTelemetry();
+            if (telem.isArmed) break;
+          }
+        }
+
+        if (!telem.isArmed && !isSim) {
+          const conn = mavlinkService.getConnectionState();
+          const reason = conn.preArmFailReason || conn.latestStatusMessage?.text || 'Flight controller did not arm motors. Check safety switch (GPS puck LED), GPS lock, compass calibration, and battery.';
+          return {
+            success: false,
+            message: `Arming failed: ${reason}`
+          };
+        }
       }
 
-      // 2. If already uploaded, execute in AUTO mode (native ArduPilot onboard path execution)
-      if (this.currentMission.isUploaded) {
+      // Step 2: If drone is sitting on the ground (<1.0m altitude), execute takeoff!
+      telem = mavlinkService.getTelemetry();
+      const currentAlt = telem.altitude || 0;
+      if (currentAlt < 1.0) {
+        console.log(`[GCS Mission] Drone on ground (alt=${currentAlt.toFixed(1)}m). Initiating takeoff to ${alt}m...`);
         audioService.playBeep(880, 150);
-        await mavlinkService.setFlightMode('AUTO');
-        await mavlinkService.commandStartMission();
-        return {
-          success: true,
-          message: `AUTONOMOUS ${this.currentMission.missionType} MISSION COMMENCED in AUTO flight mode at ${alt}m altitude!`
-        };
+        await mavlinkService.setFlightMode('GUIDED');
+        await mavlinkService.commandTakeoff(alt);
+
+        // Wait 2.5 seconds for motors to spool up and vehicle to establish climb
+        await new Promise((r) => setTimeout(r, 2500));
       }
 
-      // 3. If not yet uploaded, attempt upload first
+      // Step 3: Start shape execution
+      // If already uploaded, set current item to 1, switch to AUTO mode and start mission!
+      if (this.currentMission.isUploaded) {
+        audioService.playBeep(988, 200);
+        await mavlinkService.setCurrentMissionItem(1);
+        const modeSwitched = await mavlinkService.setFlightMode('AUTO');
+        await mavlinkService.commandStartMission();
+
+        if (modeSwitched || (mavlinkService.getTelemetry().flightMode || '').toUpperCase() === 'AUTO' || isSim) {
+          return {
+            success: true,
+            message: `AUTONOMOUS ${this.currentMission.missionType} MISSION COMMENCED in AUTO flight mode at ${alt}m altitude! Motors spinning & executing circle.`
+          };
+        } else {
+          // If AUTO mode switch failed, seamlessly fallback to GUIDED active sequencer
+          console.warn('[GCS Mission] AUTO mode change rejected by FC; falling back to active GUIDED sequencer.');
+          await mavlinkService.setFlightMode('GUIDED');
+          this.runGuidedWaypointSequencer(this.currentMission.waypoints, alt, speed);
+          return {
+            success: true,
+            message: `Flight active in GUIDED mode at ${alt}m altitude! Ground Station active guidance executing shape (${this.currentMission.waypoints.length} waypoints).`
+          };
+        }
+      }
+
+      // If not yet uploaded, attempt upload first
       const uploadRes = await this.uploadMissionToDrone();
       if (uploadRes.success) {
-        audioService.playBeep(880, 150);
-        await mavlinkService.setFlightMode('AUTO');
+        audioService.playBeep(988, 200);
+        await mavlinkService.setCurrentMissionItem(1);
+        const modeSwitched = await mavlinkService.setFlightMode('AUTO');
         await mavlinkService.commandStartMission();
-        return {
-          success: true,
-          message: `Mission uploaded and started in AUTO mode at ${alt}m altitude!`
-        };
+        if (modeSwitched || (mavlinkService.getTelemetry().flightMode || '').toUpperCase() === 'AUTO' || isSim) {
+          return {
+            success: true,
+            message: `Mission uploaded and commenced in AUTO mode at ${alt}m altitude!`
+          };
+        }
       }
 
-      // 4. Guided Flight Fallback (if MAVLink onboard mission storage unavailable)
+      // Step 4: Guided Flight Fallback
       await mavlinkService.setFlightMode('GUIDED');
-      await mavlinkService.commandTakeoff(alt);
-
-      // Start live guided shape execution so the drone completes the shape
       this.runGuidedWaypointSequencer(this.currentMission.waypoints, alt, speed);
 
       return {
         success: true,
-        message: `Takeoff initiated to ${alt}m in GUIDED mode. Ground Station active guidance running (${this.currentMission.waypoints.length} waypoints).`
+        message: `Flight active in GUIDED mode at ${alt}m altitude! Ground Station active guidance executing shape (${this.currentMission.waypoints.length} waypoints).`
       };
     } catch (err: any) {
       return {

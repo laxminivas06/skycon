@@ -652,8 +652,9 @@ export class TargetDetectionEngine {
     bboxNormalized: { nx: number; ny: number; w: number; h: number };
     sharpness: number;
     candidateType?: 'GROUND_CONTOUR' | 'CUBOID_BOX';
+    qrPayload?: string;
   }): CapturedAreaImage | null {
-    const { canvas, telemetry, bboxNormalized, sharpness, candidateType } = params;
+    const { canvas, telemetry, bboxNormalized, sharpness, candidateType, qrPayload } = params;
 
     // Calculate pixel center for pinhole ray-casting
     const pixelCenter = {
@@ -710,7 +711,8 @@ export class TargetDetectionEngine {
       estimatedGroundLon: groundLon,
       scanStatus: 'PENDING_QR_SCAN',
       sharpness,
-      candidateType: candidateType || 'GROUND_CONTOUR'
+      candidateType: candidateType || 'GROUND_CONTOUR',
+      qrPayload
     };
 
     this.capturedImages.unshift(capturedImage);
