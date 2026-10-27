@@ -468,15 +468,16 @@ class MAVLinkService {
       this.addStatusMessage('WARNING', 4, 'Link connection lost');
     } else if (phase === 'WAITING_FOR_MAVLINK') {
       this.stopHeartbeatWatchdog();
-      this.stopGcsHeartbeat();
       this.cancelPendingStreamRequests();
       this.clearHeartbeatWaitTimer();
       this.connectionState.phase = 'WAITING_FOR_MAVLINK';
       this.connectionState.isConnected = false;
-      this.connectionState.isUsbConnected = false;
+      this.connectionState.isUsbConnected = true;
       this.connectionState.isReceivingTelemetry = false;
       this.telemetry.pixhawkConnected = false;
       this.connectionState.phaseMessage = message;
+      // Emit GCS heartbeats at 1Hz so the flight controller knows GCS is listening and begins streaming
+      this.startGcsHeartbeat();
     } else if (phase === 'USB_DEVICE_DETECTED') {
       this.connectionState.phase = 'USB_DEVICE_DETECTED';
       this.connectionState.isRealHardware = true;
@@ -903,6 +904,15 @@ class MAVLinkService {
     }
 
     return { passed: true };
+  }
+
+  public isTransportConnected(): boolean {
+    return Boolean(
+      this.connectionState.isUsbConnected ||
+      this.connectionState.isConnected ||
+      usbHostService.isConnected() ||
+      usbHostService.isReady()
+    );
   }
 
   /**
@@ -2399,13 +2409,13 @@ class MAVLinkService {
     }
 
     const isSimMode = Boolean(this.simInterval || this.connectionState.connectionType === 'SIMULATED' || !this.connectionState.isRealHardware);
-    const isWsOpen = this.connectionState.isUsbConnected || this.connectionState.isConnected;
-    console.log(`[ARM] WS STATE = ${isWsOpen ? 'OPEN' : 'CLOSED'}, SIM = ${isSimMode}`);
+    const isWsOpen = this.isTransportConnected();
+    console.log(`[ARM] WS STATE = ${isWsOpen ? 'OPEN' : 'CLOSED'}, SIM = ${isSimMode}, FORCE = ${force}`);
 
-    if (!isWsOpen && !isSimMode) {
-      console.error('[ARM] FAILED BEFORE PACKET CREATION: WebSocket disconnected');
-      this.logDiagnostic('ERROR', '[ARM] Cannot send ARM: WebSocket disconnected', 'error');
-      this.addStatusMessage('WARNING', 4, 'WebSocket disconnected');
+    if (!isWsOpen && !isSimMode && !force) {
+      console.error('[ARM] FAILED BEFORE PACKET CREATION: WebSocket / Transport disconnected');
+      this.logDiagnostic('ERROR', '[ARM] Cannot send ARM: WebSocket / Transport disconnected', 'error');
+      this.addStatusMessage('WARNING', 4, 'WebSocket / Transport disconnected');
       return false;
     }
 
@@ -2490,13 +2500,13 @@ class MAVLinkService {
     console.log(`[DISARM] BUTTON CLICKED (force=${force})`);
 
     const isSimMode = Boolean(this.simInterval || this.connectionState.connectionType === 'SIMULATED' || !this.connectionState.isRealHardware);
-    const isWsOpen = Boolean(this.connectionState.isUsbConnected || this.connectionState.isConnected);
-    console.log(`[DISARM] WS STATE = ${isWsOpen ? 'OPEN' : 'CLOSED'}, SIM = ${isSimMode}`);
+    const isWsOpen = this.isTransportConnected();
+    console.log(`[DISARM] WS STATE = ${isWsOpen ? 'OPEN' : 'CLOSED'}, SIM = ${isSimMode}, FORCE = ${force}`);
 
-    if (!isWsOpen && !isSimMode) {
-      console.error('[DISARM] Cannot send DISARM: WebSocket disconnected');
-      this.logDiagnostic('ERROR', 'Cannot send DISARM: WebSocket disconnected', 'error');
-      this.addStatusMessage('WARNING', 4, 'WebSocket disconnected');
+    if (!isWsOpen && !isSimMode && !force) {
+      console.error('[DISARM] Cannot send DISARM: WebSocket / Transport disconnected');
+      this.logDiagnostic('ERROR', 'Cannot send DISARM: WebSocket / Transport disconnected', 'error');
+      this.addStatusMessage('WARNING', 4, 'WebSocket / Transport disconnected');
       return false;
     }
 
@@ -2605,7 +2615,7 @@ class MAVLinkService {
   }
 
   public async setFlightMode(modeName: FlightModeName): Promise<boolean> {
-    const isConnected = this.connectionState.isConnected || this.connectionState.isUsbConnected;
+    const isConnected = this.isTransportConnected();
     if (!isConnected && !this.simInterval) {
       this.logDiagnostic('ERROR', `Cannot set mode ${modeName}: MAVLink not connected`, 'error');
       return false;
@@ -2690,7 +2700,7 @@ class MAVLinkService {
   }
 
   public async commandTakeoff(targetAltMeters: number = 10): Promise<boolean> {
-    const isConnected = this.connectionState.isConnected || this.connectionState.isUsbConnected;
+    const isConnected = this.isTransportConnected();
     if (!isConnected && !this.simInterval) {
       this.logDiagnostic('ERROR', 'Cannot takeoff: MAVLink not connected', 'error');
       return false;
@@ -3098,7 +3108,7 @@ class MAVLinkService {
     this.lastRtlCommandTime = now;
     this.addStatusMessage('WARNING', 4, 'Initiating Emergency Return-To-Launch (RTL)...');
     this.logDiagnostic('MAVLINK', 'EMERGENCY RTL COMMAND DISPATCHED', 'warn');
-    const isConnected = this.connectionState.isConnected || this.connectionState.isUsbConnected;
+    const isConnected = this.isTransportConnected();
     if (this.connectionState.isRealHardware || isConnected) {
       // 1. Direct MAVLink COMMAND_LONG 20 (MAV_CMD_NAV_RETURN_TO_LAUNCH)
       await this.sendMavlinkCommandLong(20 /* MAV_CMD_NAV_RETURN_TO_LAUNCH */, 0, 0, 0, 0, 0, 0, 0);
@@ -3152,7 +3162,7 @@ class MAVLinkService {
 
   public async commandLand(): Promise<boolean> {
     this.addStatusMessage('NOTICE', 5, 'Initiating Landing sequence...');
-    const isConnected = this.connectionState.isConnected || this.connectionState.isUsbConnected;
+    const isConnected = this.isTransportConnected();
     if (this.connectionState.isRealHardware || isConnected) {
       await this.setFlightMode('LAND');
       return true;
@@ -3165,7 +3175,7 @@ class MAVLinkService {
   }
 
   public async commandHold(): Promise<boolean> {
-    const isConnected = this.connectionState.isConnected || this.connectionState.isUsbConnected;
+    const isConnected = this.isTransportConnected();
     if (!isConnected && !this.simInterval) {
       this.logDiagnostic('ERROR', 'Cannot execute Hold: MAVLink not connected', 'error');
       return false;

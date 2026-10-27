@@ -155,6 +155,26 @@ const server = http.createServer((req, res) => {
     }
 
     try {
+      const parsedTarget = new URL(targetUrl);
+      const host = parsedTarget.hostname.toLowerCase();
+      const isPrivateIp = host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' ||
+        host.startsWith('192.168.') || host.startsWith('10.') || /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host);
+
+      if (isPrivateIp && (process.env.RENDER || process.env.NODE_ENV === 'production')) {
+        res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          error: 'Private local camera IP cannot be proxied by cloud relay. Connect directly to camera on local Wi-Fi.',
+          isPrivateIp: true
+        }));
+        return;
+      }
+    } catch (e) {
+      res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: 'Invalid target url parameter' }));
+      return;
+    }
+
+    try {
       const client = targetUrl.startsWith('https://') ? https : http;
       const proxyReq = client.get(targetUrl, { timeout: 3000 }, (proxyRes) => {
         res.writeHead(proxyRes.statusCode || 200, {

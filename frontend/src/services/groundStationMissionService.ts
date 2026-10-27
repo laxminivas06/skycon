@@ -3,6 +3,7 @@ import { GroundStationMission, GroundStationWaypoint, MissionType, MissionDrawin
 import { missionEngine } from './missionEngine';
 import { mavlinkService, MavlinkMissionItem } from './mavlinkService';
 import { audioService } from './audioService';
+import { fetchWithFallback } from './apiClient';
 
 /**
  * Calculates Haversine distance in meters between two lat/lng coordinates.
@@ -168,7 +169,7 @@ export class GroundStationMissionService {
 
     // Sync with backend active mission route
     try {
-      fetch('/api/missions/active', { method: 'DELETE' }).catch(() => {});
+      fetchWithFallback('/api/missions/active', { method: 'DELETE' }).catch(() => {});
     } catch {}
 
     audioService.playBeep(420, 100);

@@ -10,6 +10,7 @@
 
 import { mavlinkService } from './mavlinkService';
 import { usbHostService } from './usbHostService';
+import { fetchWithFallback } from './apiClient';
 import { DroneTelemetry } from '../types/mission';
 import { PixhawkConnectionState } from '../types/mavlink';
 
@@ -216,7 +217,7 @@ class GCSConnectionService {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 10000);
 
-      const res = await fetch('/api/recon/detections/latest', {
+      const res = await fetchWithFallback('/api/recon/detections/latest', {
         method: 'GET',
         signal: controller.signal,
         headers: { 'Cache-Control': 'no-cache' }

@@ -6,6 +6,7 @@ import { runnerCommService } from '../../services/runnerCommService';
 import { reconDetectionService } from '../../services/reconDetectionService';
 import { missionEngine } from '../../services/missionEngine';
 import { audioService } from '../../services/audioService';
+import { fetchWithFallback } from '../../services/apiClient';
 import { AckProtocolCard } from './AckProtocolCard';
 import { 
   CheckCircle2, 
@@ -132,10 +133,14 @@ export const RunnerDashboard: React.FC<RunnerDashboardProps> = ({
     });
 
     // 3. Fallback network poll in case Runner is on separate network / initial load
-    const pollInterval = setInterval(async () => {
+    let isMounted = true;
+    let pollTimer: any = null;
+
+    const pollLatestDetection = async () => {
       if (typeof window === 'undefined') return;
+      let nextDelay = 3000;
       try {
-        const res = await fetch('/api/recon/detections/latest');
+        const res = await fetchWithFallback('/api/recon/detections/latest');
         if (res.ok) {
           const data = await res.json();
           if (data.success && data.detection && (data.detection.twoDigitCode || data.detection.payload)) {
@@ -151,15 +156,25 @@ export const RunnerDashboard: React.FC<RunnerDashboardProps> = ({
               audioService.triggerHaptic('success');
             }
           }
+          nextDelay = 2500;
+        } else {
+          // If 502/down, back off to 8000ms
+          nextDelay = 8000;
         }
       } catch (e) {
-        // network silent retry
+        nextDelay = 8000;
       }
-    }, 2000);
+      if (isMounted) {
+        pollTimer = setTimeout(pollLatestDetection, nextDelay);
+      }
+    };
+
+    pollTimer = setTimeout(pollLatestDetection, 1500);
 
     return () => {
+      isMounted = false;
+      if (pollTimer) clearTimeout(pollTimer);
       unsubRecon();
-      clearInterval(pollInterval);
     };
   }, []);
 

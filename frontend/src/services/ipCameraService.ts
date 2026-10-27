@@ -249,11 +249,35 @@ class IpCameraService {
     return newConfig;
   }
 
+  public isPrivateOrLocalUrl(rawUrl: string): boolean {
+    try {
+      const parsed = new URL(rawUrl);
+      const host = parsed.hostname.toLowerCase();
+      if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0') return true;
+      if (host.startsWith('192.168.') || host.startsWith('10.')) return true;
+      if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) return true;
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
   public getEffectiveStreamUrl(): string {
     const raw = this.config.fullUrl;
     if (!raw) return '';
-    const isHttpsOrigin = typeof window !== 'undefined' && Boolean(window?.location?.protocol === 'https:');
-    if ((this.config.useProxy || isHttpsOrigin) && typeof window !== 'undefined') {
+    if (typeof window === 'undefined') return raw;
+
+    const isLocalHost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    const isPrivate = this.isPrivateOrLocalUrl(raw);
+
+    // If running on cloud origin (e.g. Netlify) and the camera is on a private LAN IP (192.168.*),
+    // cloud proxying is impossible and will return 502. Direct client connection must be used.
+    if (!isLocalHost && isPrivate) {
+      return raw;
+    }
+
+    const isHttpsOrigin = Boolean(window.location.protocol === 'https:');
+    if (this.config.useProxy || (isHttpsOrigin && isLocalHost)) {
       return `/api/ipcam/proxy?url=${encodeURIComponent(raw)}`;
     }
     return raw;
@@ -264,8 +288,17 @@ class IpCameraService {
     const snap = this.config.snapshotPath.startsWith('/')
       ? `${base}${this.config.snapshotPath}`
       : `${base}/${this.config.snapshotPath}`;
-    const isHttpsOrigin = typeof window !== 'undefined' && Boolean(window?.location?.protocol === 'https:');
-    if ((this.config.useProxy || isHttpsOrigin) && typeof window !== 'undefined') {
+    if (typeof window === 'undefined') return snap;
+
+    const isLocalHost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    const isPrivate = this.isPrivateOrLocalUrl(snap);
+
+    if (!isLocalHost && isPrivate) {
+      return snap;
+    }
+
+    const isHttpsOrigin = Boolean(window.location.protocol === 'https:');
+    if (this.config.useProxy || (isHttpsOrigin && isLocalHost)) {
       return `/api/ipcam/proxy?url=${encodeURIComponent(snap)}`;
     }
     return snap;

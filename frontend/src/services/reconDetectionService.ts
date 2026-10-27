@@ -9,6 +9,7 @@ import { mavlinkService } from './mavlinkService';
 import { audioService } from './audioService';
 import { missionEngine } from './missionEngine';
 import { runnerCommService } from './runnerCommService';
+import { fetchWithFallback } from './apiClient';
 import {
   QRDetectionRecord,
   QRProcessingState,
@@ -140,7 +141,7 @@ class ReconDetectionService {
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
       try {
-        const res = await fetch('/api/recon/detections', {
+        const res = await fetchWithFallback('/api/recon/detections', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(item)
@@ -800,7 +801,7 @@ class ReconDetectionService {
     };
 
     // Send via REST endpoint with store-and-forward retry fallback
-    fetch('/api/recon/detections', {
+    fetchWithFallback('/api/recon/detections', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)

@@ -20,6 +20,7 @@ import { runnerCommService } from '../../services/runnerCommService';
 import { audioService } from '../../services/audioService';
 import { geofenceService } from '../../services/geofenceService';
 import { reconDetectionService } from '../../services/reconDetectionService';
+import { fetchWithFallback } from '../../services/apiClient';
 import { Header } from './Header';
 import { TelemetryPanel } from './TelemetryPanel';
 import { FlightOperationsCard } from './FlightOperationsCard';
@@ -131,9 +132,13 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       }
     });
 
-    const pollInterval = setInterval(async () => {
+    let isMounted = true;
+    let pollTimer: any = null;
+
+    const pollLatestDetection = async () => {
+      let nextDelay = 3500;
       try {
-        const res = await fetch('/api/recon/detections/latest');
+        const res = await fetchWithFallback('/api/recon/detections/latest');
         if (res.ok) {
           const data = await res.json();
           if (data?.success && data?.detection) {
@@ -156,22 +161,37 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               });
             }
           }
+          nextDelay = 3000;
+        } else {
+          // If Netlify/Render returns 502/down, back off to 8000ms instead of spamming every 2.5s
+          nextDelay = 8000;
         }
-      } catch {}
-    }, 2500);
+      } catch {
+        nextDelay = 8000;
+      }
+      if (isMounted) {
+        pollTimer = setTimeout(pollLatestDetection, nextDelay);
+      }
+    };
+
+    pollTimer = setTimeout(pollLatestDetection, 1200);
 
     return () => {
+      isMounted = false;
       unsub();
-      clearInterval(pollInterval);
+      if (pollTimer) clearTimeout(pollTimer);
     };
   }, []);
 
-  // Poll backend for active mission every 2s to survive GCS browser refreshes
+  // Poll backend for active mission to survive GCS browser refreshes with adaptive backoff
   useEffect(() => {
     let isMounted = true;
+    let missionTimer: any = null;
+
     const fetchActiveMission = async () => {
+      let nextDelay = 3500;
       try {
-        const res = await fetch('/api/missions/active');
+        const res = await fetchWithFallback('/api/missions/active');
         if (res.ok) {
           const data = await res.json();
           if (isMounted && data.success && data.active && data.mission) {
@@ -194,17 +214,24 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             setActiveMissionData(null);
             initialSyncDoneRef.current = true;
           }
+          nextDelay = 3000;
+        } else {
+          // If Netlify/Render returns 502/down, back off to 8000ms instead of spamming
+          nextDelay = 8000;
         }
       } catch (e) {
-        // network silent retry
+        nextDelay = 8000;
+      }
+      if (isMounted) {
+        missionTimer = setTimeout(fetchActiveMission, nextDelay);
       }
     };
 
-    fetchActiveMission();
-    const interval = setInterval(fetchActiveMission, 2500);
+    missionTimer = setTimeout(fetchActiveMission, 1800);
+
     return () => {
       isMounted = false;
-      clearInterval(interval);
+      if (missionTimer) clearTimeout(missionTimer);
     };
   }, []);
 
@@ -400,7 +427,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       const now = Date.now();
       const deadline = now + timeLimitMin * 60 * 1000;
 
-      fetch('/api/missions', {
+      fetchWithFallback('/api/missions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -516,7 +543,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
     }
 
     // Persist mode switch to backend if active mission is executing
-    fetch('/api/missions/active/mode', {
+    fetchWithFallback('/api/missions/active/mode', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode })

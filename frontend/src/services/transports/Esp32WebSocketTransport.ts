@@ -750,18 +750,20 @@ export class Esp32WebSocketTransport implements MavlinkTransport {
                   });
                 } else if (!isConnOnline) {
                   this.errorCategory = 'CONNECTOR_OFFLINE';
-                  this.lastErrorMessage = 'ESP32 bridge offline on cloud relay.';
+                  this.lastErrorMessage = 'Cloud relay connected. Awaiting ESP32 drone bridge...';
+                  this.linkState = 'CONNECTED';
                   this.notifyState({
                     phase: 'WAITING_FOR_MAVLINK',
-                    message: 'ESP32 bridge offline on cloud relay.',
+                    message: 'Cloud relay connected. Awaiting ESP32 drone bridge...',
                     error: 'CONNECTOR_OFFLINE'
                   });
                 } else {
                   this.errorCategory = 'ESP32_UNAVAILABLE';
                   this.lastErrorMessage = meta.error || 'ESP32 unavailable.';
+                  this.linkState = 'CONNECTED';
                   this.notifyState({
                     phase: 'WAITING_FOR_MAVLINK',
-                    message: 'ESP32 unavailable.',
+                    message: 'Cloud relay connected. ESP32 awaiting connection...',
                     error: 'ESP32_UNAVAILABLE'
                   });
                 }
@@ -974,25 +976,16 @@ export class Esp32WebSocketTransport implements MavlinkTransport {
   }
 
   public isConnected(): boolean {
-    return this.socket !== null && this.socket.readyState === WebSocket.OPEN && this.linkState === 'CONNECTED';
+    return Boolean(this.socket !== null && this.socket.readyState === WebSocket.OPEN);
   }
 
   public isReady(): boolean {
-    if (!this.isConnected()) {
-      return false;
-    }
-    // For Cloud Relay (WSS), confirm the flight-controller connector / bridge is online
-    if (this.currentProtocol === 'wss' || this.connectionMode === 'SECURE') {
-      return this.connectorOnline || this.esp32Online;
-    }
-    return true;
+    return this.isConnected();
   }
 
   public async send(data: Uint8Array): Promise<boolean> {
-    if (!this.isReady()) {
-      const reason = !this.isConnected()
-        ? `socket state ${this.socket ? this.socket.readyState : 'NULL'} (link: ${this.linkState})`
-        : 'cloud relay connector is offline (no flight controller bridge)';
+    if (!this.isConnected()) {
+      const reason = `socket state ${this.socket ? this.socket.readyState : 'NULL'} (link: ${this.linkState})`;
       console.warn(`[ESP32_WEBSOCKET] Cannot transmit ${data.length} bytes: ${reason}`);
       return false;
     }
