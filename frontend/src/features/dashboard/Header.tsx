@@ -17,6 +17,7 @@ import { DashboardTelemetryData } from '../../hooks/useDashboardTelemetry';
 import { AppRole } from '../../types/mission';
 import { gcsConnectionService, GCSConnectionState } from '../../services/gcsConnectionService';
 import { mavlinkService } from '../../services/mavlinkService';
+import { FlightModeSelector } from '../../components/common/FlightModeSelector';
 
 interface HeaderProps {
   telemetry: DashboardTelemetryData;
@@ -390,6 +391,9 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* 3. Right: Vehicle State Pills & Settings */}
       <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+        {/* Flight Mode Dropdown Selector */}
+        <FlightModeSelector variant="dropdown" />
+
         {/* Arm State Pill */}
         <button
           type="button"

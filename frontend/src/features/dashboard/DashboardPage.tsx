@@ -35,6 +35,7 @@ import { AutonomousMissionConfigModal } from '../../components/Mission/Autonomou
 import { MissionHistoryModal } from '../../components/History/MissionHistoryModal';
 import { SerialDiagnosticsModal } from '../../components/Drone/SerialDiagnosticsModal';
 import { PhoneDroneDashboard } from '../../components/PhoneMission/PhoneDroneDashboard';
+import { FlightModeSelector } from '../../components/common/FlightModeSelector';
 import { AppRole } from '../../types/mission';
 
 interface DashboardPageProps {
@@ -575,9 +576,23 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       )}
 
       {telemetry.isConnecting && (
-        <div className="w-full bg-[var(--uav-primary-blue)]/90 border-b border-blue-400 text-white px-4 py-1 flex items-center gap-2 text-[12px] font-semibold z-30 shrink-0">
-          <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-          <span>CONNECTING: Establishing MAVLink bridge to Pixhawk flight controller...</span>
+        <div className="w-full bg-slate-900/95 border-b border-cyan-600/60 text-white px-4 py-1 flex items-center justify-between gap-2 text-[12px] font-semibold z-30 shrink-0">
+          <div className="flex items-center gap-2">
+            <div className="w-3.5 h-3.5 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin shrink-0" />
+            <span className="font-mono text-cyan-200">
+              {telemetry.rawConnectionState.isUsbConnected
+                ? 'BRIDGE OPEN: Awaiting Pixhawk heartbeat over TELEM2 (Verify Pixhawk power & baud 57600)...'
+                : 'CONNECTING: Establishing MAVLink bridge to Pixhawk flight controller...'}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => mavlinkService.switchToSimulationMode()}
+            className="px-2.5 py-0.5 rounded bg-cyan-950 border border-cyan-500/50 hover:bg-cyan-900 text-cyan-300 text-[10px] font-mono font-bold cursor-pointer transition shrink-0"
+            title="Switch to SITL Simulator to test dashboard features instantly without flight controller hardware"
+          >
+            ⚡ BENCH SITL MOCK
+          </button>
         </div>
       )}
 
@@ -670,6 +685,11 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             mobileView === 'map' ? 'flex' : 'hidden lg:flex'
           }`}
         >
+          {/* Tactical Flight Mode Strip: 10 Modes with Real-Time Feedback & Emergency Overrides */}
+          <div className="shrink-0 z-20 bg-[#0A0E14] border-b border-[var(--uav-card-border)] p-1.5">
+            <FlightModeSelector variant="strip" onModeChanged={(mode) => showNotification(`Flight Mode switched to ${mode} ✓`)} />
+          </div>
+
           <MapPanel
             telemetry={telemetry}
             className="h-full w-full min-h-0 flex-1 border-0 rounded-none"

@@ -45,7 +45,7 @@ export const ControlModePanel: React.FC<ControlModePanelProps> = ({
 
   const isArmed = telemetry.isArmed;
 
-  const handleModeClick = async (mode: 'STABILIZE' | 'ALT_HOLD' | 'LOITER' | 'AUTO' | 'GUIDED' | 'RTL') => {
+  const handleModeClick = async (mode: 'LOITER' | 'RTL' | 'STABILIZE' | 'GUIDED' | 'AUTO' | 'LAND' | 'ALT_HOLD' | 'POSHOLD' | 'BRAKE' | 'CIRCLE') => {
     setIsChangingMode(mode);
     setModeFeedback(null);
     const ok = await mavlinkService.setFlightMode(mode);
@@ -54,7 +54,7 @@ export const ControlModePanel: React.FC<ControlModePanelProps> = ({
       setModeFeedback({ mode, success: true, msg: `Flight mode set to ${mode} ✓` });
       setTimeout(() => setModeFeedback(null), 3500);
     } else {
-      const err = connectionState.lastModeChangeError || `Pixhawk rejected ${mode}. Requires 3D GPS fix.`;
+      const err = connectionState.lastModeChangeError || `Pixhawk rejected ${mode}. Requires 3D GPS fix (6+ sats). Use STABILIZE or ALT_HOLD indoors.`;
       setModeFeedback({ mode, success: false, msg: err });
     }
   };
@@ -305,11 +305,11 @@ export const ControlModePanel: React.FC<ControlModePanelProps> = ({
               </span>
               <span className="text-slate-500">Select Mode:</span>
             </div>
-            <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 text-xs font-bold">
-              {(['STABILIZE', 'ALT_HOLD', 'LOITER', 'AUTO', 'GUIDED', 'RTL'] as const).map((mode) => {
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs font-bold">
+              {(['LOITER', 'RTL', 'STABILIZE', 'GUIDED', 'AUTO', 'LAND', 'ALT_HOLD', 'POSHOLD', 'BRAKE', 'CIRCLE'] as const).map((mode) => {
                 const isActive = (telemetry.flightMode || '').toUpperCase() === mode;
                 const isPending = isChangingMode === mode || connectionState.pendingFlightMode === mode;
-                const requiresGps = mode !== 'STABILIZE' && mode !== 'ALT_HOLD';
+                const requiresGps = mode !== 'STABILIZE' && mode !== 'ALT_HOLD' && mode !== 'LAND';
 
                 return (
                   <button

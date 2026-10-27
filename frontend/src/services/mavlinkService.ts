@@ -15,6 +15,19 @@ type TelemetryListener = (telemetry: DroneTelemetry) => void;
 type MAVLinkPacketListener = (packet: MAVLinkPacket) => void;
 type ConnectionStateListener = (state: PixhawkConnectionState) => void;
 
+export type FlightModeName =
+  | 'STABILIZE'
+  | 'LOITER'
+  | 'RTL'
+  | 'GUIDED'
+  | 'AUTO'
+  | 'LAND'
+  | 'ALT_HOLD'
+  | 'POSHOLD'
+  | 'BRAKE'
+  | 'CIRCLE'
+  | 'ACRO';
+
 export interface MavlinkMissionItem {
   seq?: number;
   lat: number;
@@ -2591,7 +2604,7 @@ class MAVLinkService {
     }
   }
 
-  public async setFlightMode(modeName: 'GUIDED' | 'AUTO' | 'STABILIZE' | 'ALT_HOLD' | 'POSHOLD' | 'LOITER' | 'RTL' | 'LAND' | 'CIRCLE'): Promise<boolean> {
+  public async setFlightMode(modeName: FlightModeName): Promise<boolean> {
     const isConnected = this.connectionState.isConnected || this.connectionState.isUsbConnected;
     if (!isConnected && !this.simInterval) {
       this.logDiagnostic('ERROR', `Cannot set mode ${modeName}: MAVLink not connected`, 'error');
@@ -2606,8 +2619,23 @@ class MAVLinkService {
       LOITER: 5,
       RTL: 6,
       CIRCLE: 7, // ArduPilot CIRCLE mode
+      POSITION: 8,
       LAND: 9,
-      POSHOLD: 16
+      OF_LOITER: 10,
+      DRIFT: 11,
+      SPORT: 13,
+      FLIP: 14,
+      AUTOTUNE: 15,
+      POSHOLD: 16,
+      BRAKE: 17, // ArduPilot BRAKE mode (instant mid-air stop)
+      THROW: 18,
+      AVOID_ADSB: 19,
+      GUIDED_NOGPS: 20,
+      SMART_RTL: 21,
+      FLOWHOLD: 22,
+      FOLLOW: 23,
+      ZIGZAG: 24,
+      SYSTEMID: 25
     };
     const customMode = modeNumbers[modeName] ?? 0;
     this.addStatusMessage('NOTICE', 5, `Setting Flight Mode to ${modeName} (Custom Mode: ${customMode})...`);
@@ -2616,7 +2644,7 @@ class MAVLinkService {
     this.notifyConnection();
 
     // Helpful diagnostic if switching into position-dependent mode without 3D GPS lock
-    const gpsDependentModes = ['LOITER', 'GUIDED', 'AUTO', 'RTL', 'POSHOLD', 'CIRCLE'];
+    const gpsDependentModes = ['LOITER', 'GUIDED', 'AUTO', 'RTL', 'POSHOLD', 'CIRCLE', 'BRAKE'];
     if (gpsDependentModes.includes(modeName) && (!this.telemetry.gps.isLocked || this.telemetry.gps.satellites < 6)) {
       const gpsWarn = `Notice: ${modeName} requires a 3D GPS Fix (6+ satellites). If bench testing indoors without GPS, switch to STABILIZE or ALT_HOLD.`;
       this.logDiagnostic('MAVLINK', `[MODE] ${gpsWarn}`, 'warn');

@@ -252,7 +252,8 @@ class IpCameraService {
   public getEffectiveStreamUrl(): string {
     const raw = this.config.fullUrl;
     if (!raw) return '';
-    if (this.config.useProxy && typeof window !== 'undefined') {
+    const isHttpsOrigin = typeof window !== 'undefined' && Boolean(window?.location?.protocol === 'https:');
+    if ((this.config.useProxy || isHttpsOrigin) && typeof window !== 'undefined') {
       return `/api/ipcam/proxy?url=${encodeURIComponent(raw)}`;
     }
     return raw;
@@ -263,7 +264,8 @@ class IpCameraService {
     const snap = this.config.snapshotPath.startsWith('/')
       ? `${base}${this.config.snapshotPath}`
       : `${base}/${this.config.snapshotPath}`;
-    if (this.config.useProxy && typeof window !== 'undefined') {
+    const isHttpsOrigin = typeof window !== 'undefined' && Boolean(window?.location?.protocol === 'https:');
+    if ((this.config.useProxy || isHttpsOrigin) && typeof window !== 'undefined') {
       return `/api/ipcam/proxy?url=${encodeURIComponent(snap)}`;
     }
     return snap;
