@@ -50,14 +50,24 @@ using namespace websockets;
 #include <freertos/task.h>
 #include <freertos/queue.h>
 #include "esp_wifi.h"
+#include "esp_private/brownout.h"
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 #include "soc/rtc_cntl_struct.h"
+#include "hal/brownout_ll.h"
 
-// Disable hardware Brownout Detector at earliest C initialization (before RTOS/setup)
-// to prevent reboot loops when powered over computer USB cables or during Wi-Fi transmit bursts
+// Comprehensive hardware Brownout Detector disable for ESP32-S3 (ESP-IDF 5.x / Arduino Core 3.x)
+// Executed at earliest C initialization (before RTOS / setup) to prevent reboot loops during Wi-Fi bursts
 __attribute__((constructor)) static void disable_bod_early_boot() {
-  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+  esp_brownout_disable();
+  RTCCNTL.fib_sel.val &= ~BIT(1); // Release hardware fuse lock on BOD reset
+  RTCCNTL.brown_out.val = 0;
+  RTCCNTL.brown_out.ena = 0;
+  RTCCNTL.brown_out.rst_ena = 0;
+  RTCCNTL.brown_out.ana_rst_en = 0;
+  RTCCNTL.brown_out.pd_rf_ena = 0;
+  RTCCNTL.brown_out.close_flash_ena = 0;
+  RTCCNTL.int_ena.rtc_brown_out = 0;
 }
 
 // =====================================================================================
@@ -383,7 +393,8 @@ void startWiFiConnection(const char* ssid, const char* pass, int32_t channel = 0
 
   // CRITICAL: Disable 802.11 modem sleep BEFORE begin() so radio doesn't miss beacons or handshake frames
   WiFi.setSleep(false);
-  WiFi.setTxPower(WIFI_POWER_19_5dBm);
+  // Cap TX power to 15dBm (~31mW) to eliminate 480mA current spikes that trigger hardware brownout resets on weak 5V rails
+  WiFi.setTxPower(WIFI_POWER_15dBm);
   WiFi.setAutoReconnect(true);
 
   if (channel > 0) {
@@ -715,6 +726,12 @@ void taskCloudRelay(void* pvParameters) {
 // SETUP
 // =====================================================================================
 void setup() {
+  esp_brownout_disable();
+  RTCCNTL.fib_sel.val &= ~BIT(1);
+  RTCCNTL.brown_out.val = 0;
+  RTCCNTL.brown_out.ena = 0;
+  RTCCNTL.brown_out.rst_ena = 0;
+  RTCCNTL.brown_out.ana_rst_en = 0;
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
 
   Serial.begin(115200);
