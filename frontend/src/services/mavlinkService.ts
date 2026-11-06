@@ -1,6 +1,7 @@
 import { DroneTelemetry, GPSLocation, HomePoint } from '../types/mission';
 import {
   MAVLinkPacket,
+  MAVLinkCommandAck,
   PixhawkConnectionState,
   FlightControllerConnection,
   PixhawkStatusMessage,
@@ -45,7 +46,7 @@ export interface MavlinkMissionItem {
 }
 
 // ArduPilot Copter Flight Mode Map
-const ARDUPILOT_MODES: Record<number, string> = {
+export const ARDUPILOT_MODES: Record<number, string> = {
   0: 'STABILIZE',
   1: 'ACRO',
   2: 'ALT_HOLD',
@@ -74,6 +75,90 @@ const ARDUPILOT_MODES: Record<number, string> = {
   26: 'AUTOROTATE',
   27: 'AUTO_RTL'
 };
+
+export const ARDUPILOT_MODE_NUMBERS: Record<string, number> = {
+  STABILIZE: 0,
+  ACRO: 1,
+  ALT_HOLD: 2,
+  AUTO: 3,
+  GUIDED: 4,
+  LOITER: 5,
+  RTL: 6,
+  CIRCLE: 7,
+  POSITION: 8,
+  LAND: 9,
+  OF_LOITER: 10,
+  DRIFT: 11,
+  SPORT: 13,
+  FLIP: 14,
+  AUTOTUNE: 15,
+  POSHOLD: 16,
+  BRAKE: 17,
+  THROW: 18,
+  AVOID_ADSB: 19,
+  GUIDED_NOGPS: 20,
+  SMART_RTL: 21,
+  FLOWHOLD: 22,
+  FOLLOW: 23,
+  ZIGZAG: 24,
+  SYSTEMID: 25,
+  AUTOROTATE: 26,
+  AUTO_RTL: 27
+};
+
+// PX4 Autopilot Flight Mode Maps
+export const PX4_MAIN_MODES: Record<number, string> = {
+  1: 'MANUAL',
+  2: 'ALTITUDE',
+  3: 'POSITION',
+  4: 'AUTO',
+  5: 'ACRO',
+  6: 'OFFBOARD',
+  7: 'STABILIZED',
+  8: 'RATTITUDE'
+};
+
+export const PX4_AUTO_SUB_MODES: Record<number, string> = {
+  1: 'READY',
+  2: 'TAKEOFF',
+  3: 'HOLD',
+  4: 'MISSION',
+  5: 'RTL',
+  6: 'LAND',
+  7: 'RTGS',
+  8: 'FOLLOW',
+  9: 'PRECLAND'
+};
+
+export function decodePx4FlightMode(mainMode: number, subMode: number): string {
+  if (mainMode === 4) { // AUTO
+    if (subMode === 3) return 'LOITER'; // PX4 AUTO_LOITER is HOLD / LOITER
+    if (subMode === 4) return 'AUTO';   // PX4 AUTO_MISSION is AUTO
+    if (subMode === 5) return 'RTL';    // PX4 AUTO_RTL is RTL
+    if (subMode === 6) return 'LAND';   // PX4 AUTO_LAND is LAND
+    return `AUTO_${PX4_AUTO_SUB_MODES[subMode] || subMode}`;
+  }
+  if (mainMode === 2) return 'ALT_HOLD'; // PX4 ALTITUDE -> ALT_HOLD
+  if (mainMode === 3) return 'POSHOLD';  // PX4 POSITION -> POSHOLD
+  if (mainMode === 6) return 'GUIDED';   // PX4 OFFBOARD -> GUIDED
+  if (mainMode === 7) return 'STABILIZE';
+  return PX4_MAIN_MODES[mainMode] || `PX4_${mainMode}`;
+}
+
+export function encodePx4FlightMode(modeName: string): { mainMode: number; subMode: number } {
+  const m = (modeName || '').toUpperCase();
+  if (m === 'MANUAL') return { mainMode: 1, subMode: 0 };
+  if (m === 'ALT_HOLD' || m === 'ALTITUDE') return { mainMode: 2, subMode: 0 };
+  if (m === 'POSHOLD' || m === 'POSITION') return { mainMode: 3, subMode: 0 };
+  if (m === 'LOITER') return { mainMode: 4, subMode: 3 }; // AUTO_LOITER
+  if (m === 'AUTO') return { mainMode: 4, subMode: 4 };   // AUTO_MISSION
+  if (m === 'RTL') return { mainMode: 4, subMode: 5 };    // AUTO_RTL
+  if (m === 'LAND') return { mainMode: 4, subMode: 6 };   // AUTO_LAND
+  if (m === 'GUIDED') return { mainMode: 6, subMode: 0 }; // OFFBOARD
+  if (m === 'ACRO') return { mainMode: 5, subMode: 0 };
+  if (m === 'STABILIZE' || m === 'STABILIZED') return { mainMode: 7, subMode: 0 };
+  return { mainMode: 1, subMode: 0 };
+}
 
 const AUTOPILOT_NAMES: Record<number, string> = {
   0: 'GENERIC',
@@ -163,7 +248,25 @@ export const MAVLINK_CRC_EXTRAS: Record<number, number> = {
   253: 83  // STATUSTEXT
 };
 
+export interface InFlightCommandRequest {
+  command: number;
+  params: number[];
+  sentTimestamp: number;
+  timeoutMs: number;
+  resolve: (ack: {
+    success: boolean;
+    result: number;
+    resultName: string;
+    statustext?: string;
+    message: string;
+  }) => void;
+  timer: any;
+}
+
 class MAVLinkService {
+  private inFlightCommands: Map<number, InFlightCommandRequest> = new Map();
+  private recentStatusTexts: Array<{ text: string; severity: number; timestamp: number }> = [];
+  private commandAuditLog: Array<MAVLinkCommandAck> = [];
   private listeners: Set<TelemetryListener> = new Set();
   private packetListeners: Set<MAVLinkPacketListener> = new Set();
   private connectionListeners: Set<ConnectionStateListener> = new Set();
@@ -610,18 +713,20 @@ class MAVLinkService {
     this.connectionState.heartbeatHz = +(this.heartbeatTimestamps.length / 5.0).toFixed(1);
     this.connectionState.diagnostics.heartbeatHz = this.connectionState.heartbeatHz;
 
-    // Stable 12-second loss threshold with hysteresis to eliminate rapid on/off flapping
-    if (ageMs > 12000) {
+    // Strict 3000ms loss threshold per Master UAV Specification
+    if (ageMs > 3000) {
       this.connectionState.isConnected = false;
       this.connectionState.isReceivingTelemetry = false;
-      this.connectionState.phase = 'WAITING_FOR_MAVLINK';
-      this.connectionState.phaseMessage = 'MAVLink Telemetry Paused (No Heartbeat > 12s)';
+      this.connectionState.phase = 'CONNECTION_LOST';
+      this.connectionState.phaseMessage = 'MAVLink Connection Lost (No Heartbeat > 3s)';
       this.telemetry.gps.isLocked = false;
       this.telemetry.pixhawkConnected = false;
+      this.telemetry.isArmed = false;
+      this.connectionState.vehicleState = 'DISARMED';
       this.cancelPendingStreamRequests();
       this.stopHeartbeatWatchdog();
-      this.logDiagnostic('MAVLINK', '[MAVLINK] Heartbeat stream paused (> 12s since last packet)', 'warn');
-      this.addStatusMessage('WARNING', 4, 'MAVLink Telemetry Stream Paused (No Heartbeat > 12s)');
+      this.logDiagnostic('MAVLINK', '[MAVLINK] Heartbeat lost (> 3000ms since last packet)', 'warn');
+      this.addStatusMessage('WARNING', 4, 'MAVLink Connection Lost (No Heartbeat > 3s)');
       this.notifyConnection();
       this.notifyTelemetry();
     } else {
@@ -1289,6 +1394,11 @@ class MAVLinkService {
     switch (msgId) {
       // HEARTBEAT (msgId = 0) -> Proof of MAVLink Connection!
       case 0: {
+        if (payload.length < 9) break;
+        const type = view.getUint8(4);
+        // Strict Filter: Never let a GCS (type 6) heartbeat masquerade as the vehicle
+        if (type === 6) break;
+
         this.clearHeartbeatWaitTimer();
         this.connectionState.lastHeartbeat = now;
         this.heartbeatTimestamps.push(now);
@@ -1306,43 +1416,51 @@ class MAVLinkService {
         this.connectionState.phaseMessage = `Pixhawk connected ✓ (${mavVersion})`;
         this.telemetry.pixhawkConnected = true;
 
-        if (payload.length >= 9) {
-          const customMode = view.getUint32(0, true);
-          const type = view.getUint8(4);
-          const autopilot = view.getUint8(5);
-          const baseMode = view.getUint8(6);
-          const isArmed = (baseMode & 128) !== 0; // MAV_MODE_FLAG_SAFETY_ARMED (128)
-          const flightModeName = ARDUPILOT_MODES[customMode] || `MODE_${customMode}`;
+        const customMode = view.getUint32(0, true);
+        const autopilot = view.getUint8(5);
+        const baseMode = view.getUint8(6);
+        const isArmed = (baseMode & 128) !== 0; // MAV_MODE_FLAG_SAFETY_ARMED (128)
 
-          this.connectionState.autopilotType = AUTOPILOT_NAMES[autopilot] || `AUTOPILOT_${autopilot}`;
-          this.connectionState.diagnostics.autopilotType = this.connectionState.autopilotType;
-          this.connectionState.diagnostics.vehicleType = VEHICLE_TYPE_NAMES[type] || `TYPE_${type}`;
+        const isPx4 = autopilot === 12;
+        this.connectionState.autopilotType = isPx4 ? 'MAV_AUTOPILOT_PX4' : 'MAV_AUTOPILOT_ARDUPILOT';
+        this.connectionState.diagnostics.autopilotType = this.connectionState.autopilotType;
+        this.connectionState.diagnostics.vehicleType = VEHICLE_TYPE_NAMES[type] || `TYPE_${type}`;
 
-          this.telemetry.isArmed = isArmed;
-          this.telemetry.flightMode = flightModeName || 'STABILIZE';
-          this.connectionState.vehicleState = isArmed ? 'ARMED' : 'DISARMED';
-          this.telemetry.vehicleState = isArmed ? 'ARMED' : 'DISARMED';
-
-          // Clear pending flight mode if confirmed by Pixhawk HEARTBEAT
-          if (this.connectionState.pendingFlightMode && this.connectionState.pendingFlightMode === flightModeName) {
-            this.connectionState.pendingFlightMode = undefined;
-            this.connectionState.lastModeChangeError = undefined;
-            if (this.modeChangeResolver) {
-              const res = this.modeChangeResolver;
-              this.modeChangeResolver = null;
-              if (this.modeChangeTimer) clearTimeout(this.modeChangeTimer);
-              res({ success: true, message: `Mode confirmed: ${flightModeName}` });
-            }
-          }
-
-          // Clear preArmFailReason when vehicle is armed
-          if (isArmed && this.connectionState.preArmFailReason) {
-            this.connectionState.preArmFailReason = undefined;
-            this.connectionState.preArmChecksPassed = true;
-          }
-
-          console.log(`[HEARTBEAT] sysid: ${sysId} armed: ${isArmed}`);
+        let flightModeName = 'UNKNOWN';
+        if (isPx4) {
+          const mainMode = (customMode >> 16) & 0xFF;
+          const subMode = (customMode >> 24) & 0xFF;
+          flightModeName = decodePx4FlightMode(mainMode, subMode);
+        } else {
+          flightModeName = ARDUPILOT_MODES[customMode] || `MODE_${customMode}`;
         }
+
+        // PHYSICAL PIXHAWK IS THE SOLE SOURCE OF TRUTH:
+        // isArmed is derived ONLY from (baseMode & 128)
+        this.telemetry.isArmed = isArmed;
+        this.telemetry.flightMode = flightModeName || 'STABILIZE';
+        this.connectionState.vehicleState = isArmed ? 'ARMED' : 'DISARMED';
+        this.telemetry.vehicleState = isArmed ? 'ARMED' : 'DISARMED';
+
+        // Clear pending flight mode if confirmed by Pixhawk HEARTBEAT
+        if (this.connectionState.pendingFlightMode && this.connectionState.pendingFlightMode === flightModeName) {
+          this.connectionState.pendingFlightMode = undefined;
+          this.connectionState.lastModeChangeError = undefined;
+          if (this.modeChangeResolver) {
+            const res = this.modeChangeResolver;
+            this.modeChangeResolver = null;
+            if (this.modeChangeTimer) clearTimeout(this.modeChangeTimer);
+            res({ success: true, message: `Mode confirmed: ${flightModeName}` });
+          }
+        }
+
+        // Clear preArmFailReason when vehicle is confirmed armed by hardware
+        if (isArmed && this.connectionState.preArmFailReason) {
+          this.connectionState.preArmFailReason = undefined;
+          this.connectionState.preArmChecksPassed = true;
+        }
+
+        console.log(`[HEARTBEAT] sysid: ${sysId} armed: ${isArmed} mode: ${flightModeName}`);
 
         if (wasNotConnected) {
           this.startGcsHeartbeat();
@@ -2057,6 +2175,8 @@ class MAVLinkService {
             text += String.fromCharCode(textBytes[j]);
           }
           if (text.length > 0) {
+            this.recentStatusTexts.unshift({ text, severity: severityLevel, timestamp: Date.now() });
+            if (this.recentStatusTexts.length > 30) this.recentStatusTexts.pop();
             const lower = text.toLowerCase();
             const explanation = this.explainPreArmFailure(text);
             const displayMsg = explanation !== text ? `${text} (${explanation})` : text;
@@ -2150,6 +2270,13 @@ class MAVLinkService {
           const result = payload.length >= 3 ? view.getUint8(2) : 0;
           const progress = payload.length >= 4 ? view.getUint8(3) : 0;
           const resultParam2 = payload.length >= 8 ? view.getInt32(4, true) : 0;
+
+          // Correlate with recent STATUSTEXT (especially PreArm / safety messages)
+          const correlatedStatus = this.recentStatusTexts.find(st =>
+            (Date.now() - st.timestamp < 5000) &&
+            (st.text.toLowerCase().includes('prearm') || st.text.toLowerCase().includes('fail') || st.text.toLowerCase().includes('check') || st.text.toLowerCase().includes('denied') || st.text.toLowerCase().includes('reject'))
+          );
+          const statusStr = correlatedStatus ? correlatedStatus.text : undefined;
           const resultNames = [
             'MAV_RESULT_ACCEPTED', // 0
             'MAV_RESULT_TEMPORARILY_REJECTED', // 1
@@ -2199,15 +2326,35 @@ class MAVLinkService {
             console.log(`[MAVLINK ACK]\ncommand = ${command}\nresult = ${resultName} (${result})`);
           }
 
-          const ackObj = {
+          const ackObj: MAVLinkCommandAck = {
             command,
-            commandName: command === 400 ? 'MAV_CMD_COMPONENT_ARM_DISARM' : command === 300 ? 'MAV_CMD_MISSION_START' : `CMD_${command}`,
+            commandName: command === 400 ? 'MAV_CMD_COMPONENT_ARM_DISARM' : command === 300 ? 'MAV_CMD_MISSION_START' : command === 176 ? 'MAV_CMD_DO_SET_MODE' : `CMD_${command}`,
             result,
             resultName,
             progress,
             resultParam2,
+            statustext: statusStr,
             timestamp: Date.now()
           };
+
+          this.commandAuditLog.unshift(ackObj);
+          if (this.commandAuditLog.length > 50) this.commandAuditLog.pop();
+
+          // Correlate with Authoritative In-Flight Command Registry
+          const inFlight = this.inFlightCommands.get(command);
+          if (inFlight) {
+            clearTimeout(inFlight.timer);
+            this.inFlightCommands.delete(command);
+            inFlight.resolve({
+              success: result === 0,
+              result,
+              resultName,
+              statustext: statusStr,
+              message: result === 0
+                ? `Command ${command} accepted by Pixhawk ✓`
+                : `Command ${command} rejected (${resultName})${statusStr ? `: ${statusStr}` : ''}`
+            });
+          }
 
           this.connectionState.lastCommandAck = ackObj;
           this.connectionState.lastCommandAckResultName = resultName;
@@ -2485,11 +2632,44 @@ class MAVLinkService {
         this.notifyConnection();
         return true;
       } else {
-        const success = await this.sendMavlinkCommandLong(400 /* MAV_CMD_COMPONENT_ARM_DISARM */, 1.0 /* Arm */, param2, 0.0, 0.0, 0.0, 0.0, 0.0);
-        return success;
+        // Step 4 & 5: Transmit command and await COMMAND_ACK
+        const ack = await this.executeCommandLong(400, 1.0, param2, 0.0, 0.0, 0.0, 0.0, 0.0, 4000);
+        
+        // Step 6: If COMMAND_ACK is not accepted, transition state to DISARMED / FAILED
+        if (!ack.success) {
+          this.connectionState.vehicleState = 'DISARMED';
+          this.telemetry.vehicleState = 'DISARMED';
+          this.telemetry.isArmed = false;
+          this.connectionState.preArmFailReason = ack.statustext || ack.resultName;
+          this.logDiagnostic('MAVLINK', `[ARM REJECTED] Pixhawk rejected arm: ${ack.statustext || ack.resultName}`, 'warn');
+          this.addStatusMessage('ERROR', 3, `Arming failed: ${ack.statustext || ack.resultName}`);
+          this.notifyConnection();
+          this.notifyTelemetry();
+          return false;
+        }
+
+        // Step 7, 8, 9: COMMAND_ACK accepted, wait up to 3000ms for subsequent HEARTBEAT to confirm armed bit (128)
+        const armConfirmStart = Date.now();
+        while (Date.now() - armConfirmStart < 3000) {
+          if (this.telemetry.isArmed) {
+            this.addStatusMessage('INFO', 6, 'Motors Armed ✓ Confirmed by Pixhawk Heartbeat');
+            this.notifyConnection();
+            this.notifyTelemetry();
+            return true;
+          }
+          await new Promise(r => setTimeout(r, 100));
+        }
+
+        // If heartbeat did not confirm armed within 3000ms:
+        this.connectionState.vehicleState = 'DISARMED';
+        this.telemetry.vehicleState = 'DISARMED';
+        this.telemetry.isArmed = false;
+        this.addStatusMessage('WARNING', 4, 'Arm command accepted, but telemetry heartbeat armed confirmation timed out.');
+        this.notifyConnection();
+        this.notifyTelemetry();
+        return false;
       }
     } finally {
-      // Release in-flight lock after brief debounce period
       setTimeout(() => {
         this.isArmCommandInFlight = false;
       }, 500);
@@ -2548,17 +2728,24 @@ class MAVLinkService {
       this.notifyConnection();
       return true;
     } else {
-      const success = await this.sendMavlinkCommandLong(400 /* MAV_CMD_COMPONENT_ARM_DISARM */, 0.0 /* Disarm */, param2, 0.0, 0.0, 0.0, 0.0, 0.0);
-      if (success && (shouldForce || this.telemetry.altitude <= 1.0)) {
-        // Optimistic disarm confirmation when sent with force on ground/bench
-        this.telemetry.isArmed = false;
-        this.telemetry.vehicleState = 'DISARMED';
-        this.connectionState.vehicleState = 'DISARMED';
-        this.telemetry.flightMode = 'DISARMED';
-        this.notifyTelemetry();
-        this.notifyConnection();
+      const ack = await this.executeCommandLong(400, 0.0, param2, 0.0, 0.0, 0.0, 0.0, 0.0, 3500);
+      if (!ack.success) {
+        this.addStatusMessage('WARNING', 4, `Disarm rejected: ${ack.statustext || ack.resultName}`);
+        return false;
       }
-      return success;
+      // Await heartbeat confirmation (bit 128 is 0)
+      const disarmConfirmStart = Date.now();
+      while (Date.now() - disarmConfirmStart < 3000) {
+        if (!this.telemetry.isArmed) {
+          this.connectionState.vehicleState = 'DISARMED';
+          this.telemetry.vehicleState = 'DISARMED';
+          this.notifyConnection();
+          this.notifyTelemetry();
+          return true;
+        }
+        await new Promise(r => setTimeout(r, 100));
+      }
+      return !this.telemetry.isArmed;
     }
   }
 
@@ -2671,29 +2858,45 @@ class MAVLinkService {
     }
 
     if (this.connectionState.isRealHardware || isConnected) {
-      // 1. Send native MAVLink message #11 (SET_MODE) - Required by ArduPilot Copter
-      await this.sendSetModeMessage(customMode);
-      // 2. Also send COMMAND_LONG 176 as redundant fallback
-      await this.sendMavlinkCommandLong(176, 1 /* MAV_MODE_FLAG_CUSTOM_MODE_ENABLED */, customMode);
+      const isPx4 = this.connectionState.autopilotType === 'MAV_AUTOPILOT_PX4';
+      if (isPx4) {
+        const { mainMode, subMode } = encodePx4FlightMode(modeName);
+        const px4CustomMode = (mainMode << 16) | (subMode << 24);
+        const ack = await this.executeCommandLong(176, 1, px4CustomMode, 0, 0, 0, 0, 0, 4000);
+        if (!ack.success) {
+          this.connectionState.pendingFlightMode = undefined;
+          this.connectionState.lastModeChangeError = ack.statustext || ack.message;
+          this.notifyConnection();
+          return false;
+        }
+      } else {
+        // 1. Send native MAVLink message #11 (SET_MODE) - Required by ArduPilot Copter
+        await this.sendSetModeMessage(customMode);
+        // 2. Also send COMMAND_LONG 176
+        const ack = await this.executeCommandLong(176, 1 /* MAV_MODE_FLAG_CUSTOM_MODE_ENABLED */, customMode, 0, 0, 0, 0, 0, 4000);
+        if (!ack.success) {
+          this.connectionState.pendingFlightMode = undefined;
+          this.connectionState.lastModeChangeError = ack.statustext || ack.message;
+          this.notifyConnection();
+          return false;
+        }
+      }
 
-      // Await confirmation or rejection from Pixhawk (4000ms allows cellular hotspot latency)
-      return new Promise<boolean>((resolve) => {
-        if (this.modeChangeTimer) clearTimeout(this.modeChangeTimer);
-        this.modeChangeResolver = (res) => {
-          this.modeChangeResolver = null;
-          if (this.modeChangeTimer) clearTimeout(this.modeChangeTimer);
-          resolve(res.success);
-        };
-        this.modeChangeTimer = setTimeout(() => {
-          if (this.modeChangeResolver) {
-            this.modeChangeResolver = null;
-            const matched = (this.telemetry.flightMode || '').toUpperCase() === modeName;
-            this.connectionState.pendingFlightMode = undefined;
-            this.notifyConnection();
-            resolve(matched);
-          }
-        }, 4000);
-      });
+      // Await confirmation from subsequent Pixhawk HEARTBEAT
+      const modeWaitStart = Date.now();
+      while (Date.now() - modeWaitStart < 3500) {
+        if ((this.telemetry.flightMode || '').toUpperCase() === modeName) {
+          this.connectionState.pendingFlightMode = undefined;
+          this.notifyConnection();
+          return true;
+        }
+        await new Promise(r => setTimeout(r, 150));
+      }
+
+      const confirmed = (this.telemetry.flightMode || '').toUpperCase() === modeName;
+      this.connectionState.pendingFlightMode = undefined;
+      this.notifyConnection();
+      return confirmed;
     } else {
       return true;
     }
@@ -3057,18 +3260,55 @@ class MAVLinkService {
       this.logDiagnostic('ERROR', 'Cannot start mission: MAVLink not connected', 'error');
       return false;
     }
-    this.addStatusMessage('NOTICE', 5, 'Sending MAVLink MISSION_START Command to Pixhawk FC...');
-    if (this.connectionState.isRealHardware || isConnected) {
-      await this.setCurrentMissionItem(1);
-      await this.setFlightMode('AUTO');
-      // MAV_CMD_MISSION_START (300): param1 = first_item (1 to start from item 1 takeoff)
-      await this.sendMavlinkCommandLong(300 /* MAV_CMD_MISSION_START */, 1.0, 0, 0, 0, 0, 0, 0);
-      return true;
-    } else {
+
+    if (!this.connectionState.isRealHardware) {
       this.telemetry.flightMode = 'AUTO';
       this.notifyTelemetry();
       return true;
     }
+
+    // Pre-flight sensor sanity checks
+    if (this.telemetry.batteryVoltage > 0.0 && this.telemetry.batteryVoltage < 10.5) {
+      const msg = `Cannot start mission: Battery critically low (${this.telemetry.batteryVoltage.toFixed(1)}V)`;
+      this.addStatusMessage('ERROR', 3, msg);
+      return false;
+    }
+    if (this.telemetry.gps.hdop > 2.0 && this.telemetry.gps.fixType !== 'NO_GPS') {
+      const msg = `Cannot start mission: GPS HDOP is poor (${this.telemetry.gps.hdop.toFixed(1)}m > 2.0m max required)`;
+      this.addStatusMessage('WARNING', 4, msg);
+      return false;
+    }
+
+    this.addStatusMessage('NOTICE', 5, 'Starting Mission: Setting waypoint 1, switching to AUTO, and commanding mission start...');
+
+    // 1. Set current mission item to 1
+    await this.setCurrentMissionItem(1);
+
+    // 2. Switch to AUTO mode
+    const modeOk = await this.setFlightMode('AUTO');
+    if (!modeOk) {
+      this.addStatusMessage('ERROR', 3, 'Cannot start mission: Flight controller rejected switch to AUTO flight mode.');
+      return false;
+    }
+
+    // 3. Ensure vehicle is armed if motors are stopped
+    if (!this.telemetry.isArmed) {
+      const armOk = await this.sendArmCommand(false);
+      if (!armOk) {
+        this.addStatusMessage('ERROR', 3, `Cannot start mission: Motors failed to arm (${this.connectionState.preArmFailReason || 'Pre-arm checks failed'})`);
+        return false;
+      }
+    }
+
+    // 4. Send MAV_CMD_MISSION_START (300) and verify ACK
+    const res = await this.executeCommandLong(300, 1.0, 0, 0, 0, 0, 0, 0, 3500);
+    if (!res.success) {
+      this.addStatusMessage('ERROR', 3, `Mission Start rejected by Pixhawk: ${res.statustext || res.resultName}`);
+      return false;
+    }
+
+    this.addStatusMessage('INFO', 6, 'Mission Start confirmed and running ✓');
+    return true;
   }
 
   public async commandStartSearch(): Promise<boolean> {
@@ -3331,6 +3571,9 @@ class MAVLinkService {
       }
       if (it.lat < -90 || it.lat > 90 || it.lon < -180 || it.lon > 180) {
         return { success: false, message: `Invalid waypoint at index ${i}: Latitude (${it.lat}) or Longitude (${it.lon}) out of WGS-84 bounds.` };
+      }
+      if (it.alt < 1.0 || it.alt > 120.0) {
+        return { success: false, message: `Invalid waypoint at index ${i}: Altitude (${it.alt}m) outside safe limits [1.0m, 120.0m].` };
       }
     }
 
@@ -3911,7 +4154,104 @@ class MAVLinkService {
     }
   }
 
+  public async executeCommandLong(
+    command: number,
+    param1: number = 0,
+    param2: number = 0,
+    param3: number = 0,
+    param4: number = 0,
+    param5: number = 0,
+    param6: number = 0,
+    param7: number = 0,
+    timeoutMs: number = 3500
+  ): Promise<{ success: boolean; result: number; resultName: string; statustext?: string; message: string }> {
+    if (!this.connectionState.isRealHardware || this.connectionState.connectionType === 'SIMULATED') {
+      return {
+        success: true,
+        result: 0,
+        resultName: 'MAV_RESULT_ACCEPTED',
+        message: 'Simulated command accepted'
+      };
+    }
+
+    if (!usbHostService.isReady() || !this.connectionState.isConnected) {
+      return {
+        success: false,
+        result: 4,
+        resultName: 'MAV_RESULT_FAILED',
+        message: 'Flight controller MAVLink connection is not open'
+      };
+    }
+
+    // Cancel any prior in-flight command for the same command ID
+    const existing = this.inFlightCommands.get(command);
+    if (existing) {
+      clearTimeout(existing.timer);
+      this.inFlightCommands.delete(command);
+      existing.resolve({
+        success: false,
+        result: 6,
+        resultName: 'MAV_RESULT_CANCELLED',
+        message: `Superseded by new command ${command}`
+      });
+    }
+
+    return new Promise(async (resolve) => {
+      const timer = setTimeout(() => {
+        this.inFlightCommands.delete(command);
+        const correlatedStatus = this.recentStatusTexts.find(st =>
+          (Date.now() - st.timestamp < timeoutMs + 1000) &&
+          (st.text.toLowerCase().includes('prearm') || st.text.toLowerCase().includes('fail'))
+        );
+        const statusStr = correlatedStatus ? correlatedStatus.text : undefined;
+        resolve({
+          success: false,
+          result: 4,
+          resultName: 'MAV_RESULT_TIMEOUT',
+          statustext: statusStr,
+          message: `Command ${command} timed out waiting for COMMAND_ACK (${timeoutMs}ms)${statusStr ? ` [Pixhawk: ${statusStr}]` : ''}`
+        });
+      }, timeoutMs);
+
+      this.inFlightCommands.set(command, {
+        command,
+        params: [param1, param2, param3, param4, param5, param6, param7],
+        sentTimestamp: Date.now(),
+        timeoutMs,
+        resolve,
+        timer
+      });
+
+      const sent = await this.rawSendCommandLong(command, param1, param2, param3, param4, param5, param6, param7);
+      if (!sent) {
+        clearTimeout(timer);
+        this.inFlightCommands.delete(command);
+        resolve({
+          success: false,
+          result: 4,
+          resultName: 'MAV_RESULT_FAILED',
+          message: 'Failed to write command bytes to transport bridge'
+        });
+      }
+    });
+  }
+
   public async sendMavlinkCommandLong(
+    command: number,
+    param1: number = 0,
+    param2: number = 0,
+    param3: number = 0,
+    param4: number = 0,
+    param5: number = 0,
+    param6: number = 0,
+    param7: number = 0,
+    timeoutMs: number = 3500
+  ): Promise<boolean> {
+    const res = await this.executeCommandLong(command, param1, param2, param3, param4, param5, param6, param7, timeoutMs);
+    return res.success;
+  }
+
+  public async rawSendCommandLong(
     command: number,
     param1: number = 0,
     param2: number = 0,

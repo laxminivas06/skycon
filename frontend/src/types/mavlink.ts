@@ -37,6 +37,8 @@ export type FlightControllerConnection =
 export type ConnectionPhase =
   // Standard Connection State Machine (per SAEISS spec)
   | 'DISCONNECTED'
+  | 'CONNECTING'
+  | 'RECONNECTING'
   | 'USB_DEVICE_DETECTED'
   | 'USB_PERMISSION_REQUIRED'
   | 'USB_PERMISSION_GRANTED'
@@ -113,6 +115,7 @@ export interface MAVLinkCommandAck {
   resultName: string;
   progress?: number;
   resultParam2?: number;
+  statustext?: string;
   timestamp: number;
 }
 

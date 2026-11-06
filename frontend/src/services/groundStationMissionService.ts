@@ -1265,21 +1265,10 @@ export class GroundStationMissionService {
           if (telem.isArmed) break;
         }
 
-        if (!telem.isArmed && !forceBypass) {
-          // Retry once with bypass in case flight controller requires forced override
-          console.warn('[GCS Mission] Arm confirmation not received within 3.5s; attempting force bypass arm...');
-          await mavlinkService.sendArmCommand(true);
-          const forceWait = Date.now();
-          while (Date.now() - forceWait < 2000) {
-            await new Promise((r) => setTimeout(r, 200));
-            telem = mavlinkService.getTelemetry();
-            if (telem.isArmed) break;
-          }
-        }
-
+        // Strict state-of-truth arming verification (zero unsafe force-arm overrides in standard mission flows)
         if (!telem.isArmed && !isSim) {
           const conn = mavlinkService.getConnectionState();
-          const reason = conn.preArmFailReason || conn.latestStatusMessage?.text || 'Flight controller did not arm motors. Check safety switch (GPS puck LED), GPS lock, compass calibration, and battery.';
+          const reason = conn.preArmFailReason || conn.latestStatusMessage?.text || 'Flight controller did not arm motors. Check safety switch (GPS puck LED solid red), GPS 3D lock (HDOP < 2.0m), and battery voltage.';
           return {
             success: false,
             message: `Arming failed: ${reason}`
