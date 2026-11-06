@@ -51,3 +51,4 @@ if ($LASTEXITCODE -eq 0) {
 } else {
     Write-Host "`n❌ Flashing failed. Hold BOOT button on the ESP32 and run again." -ForegroundColor Red
 }
+
