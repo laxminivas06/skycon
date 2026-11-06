@@ -99,23 +99,29 @@ class VisualServoPID:
         self.prev_error = 0.0
         self.last_time = time.time()
 
-    def compute(self, error: float) -> float:
+    def compute(self, error: float, current_alt_m: float = 5.0, ref_alt_m: float = 5.0) -> float:
         now = time.time()
         dt = max(1e-3, now - self.last_time)
         self.last_time = now
 
+        # Dynamic Altitude Scaling:
+        # At 1.5m altitude, 1 pixel represents 3.3x less ground distance than at 5.0m.
+        # Scale error by (current_alt / ref_alt) clamped to [0.25, 1.2] to prevent low-altitude overshooting and oscillations.
+        alt_scale = max(0.25, min(1.2, float(current_alt_m) / max(1.0, float(ref_alt_m))))
+        scaled_error = error * alt_scale
+
         # Proportional term
-        p_term = self.kp * error
+        p_term = self.kp * scaled_error
 
         # Integral term with anti-windup clamping
-        self.integral_error += error * dt
+        self.integral_error += scaled_error * dt
         self.integral_error = max(-self.i_clamp, min(self.i_clamp, self.integral_error))
         i_term = self.ki * self.integral_error
 
         # Derivative term
-        derivative = (error - self.prev_error) / dt
+        derivative = (scaled_error - self.prev_error) / dt
         d_term = self.kd * derivative
-        self.prev_error = error
+        self.prev_error = scaled_error
 
         # Total control effort
         output = p_term + i_term + d_term
@@ -546,8 +552,9 @@ class AutonomousVisionBrain:
                         err_right = float(cx - center_x)
                         pixel_dist = math.sqrt(err_fwd**2 + err_right**2)
 
-                        vx = self.pid_x.compute(err_fwd)
-                        vy = self.pid_y.compute(err_right)
+                        # Dynamic altitude-scaled 2D PID velocities clamped strictly to [-0.6, +0.6] m/s
+                        vx = self.pid_x.compute(err_fwd, current_alt_m=self.current_altitude_m, ref_alt_m=self.search_altitude)
+                        vy = self.pid_y.compute(err_right, current_alt_m=self.current_altitude_m, ref_alt_m=self.search_altitude)
 
                         # Descent logic down to 3.5m observation floor
                         target_floor_alt = 3.5

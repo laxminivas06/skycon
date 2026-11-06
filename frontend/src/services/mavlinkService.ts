@@ -2958,14 +2958,21 @@ class MAVLinkService {
     } catch (e) {}
 
     this.telemetry.targetAltitude = targetAltMeters;
-    this.addStatusMessage('NOTICE', 5, `Sending Takeoff Command to ${targetAltMeters}m...`);
+    this.addStatusMessage('NOTICE', 5, `Sending Takeoff Command to ${targetAltMeters}m in GUIDED mode...`);
     if (this.connectionState.isRealHardware || isConnected) {
       // ArduPilot requires GUIDED flight mode to accept MAV_CMD_NAV_TAKEOFF (22)
       await this.setFlightMode('GUIDED');
-      await this.sendMavlinkCommandInt(22 /* MAV_CMD_NAV_TAKEOFF */, 0, 0, 0, 0, 0, 0, targetAltMeters, 6 /* MAV_FRAME_GLOBAL_RELATIVE_ALT_INT */);
-      // Small 50ms stagger before COMMAND_LONG to avoid serial buffer collision & duplicate ACK race (AUD-03)
-      await new Promise((r) => setTimeout(r, 50));
-      await this.sendMavlinkCommandLong(22 /* MAV_CMD_NAV_TAKEOFF */, 0, 0, 0, 0, 0, 0, targetAltMeters);
+      await new Promise((r) => setTimeout(r, 100));
+
+      // Canonical ArduPilot Takeoff via MAV_CMD_NAV_TAKEOFF (22):
+      // param1: Pitch (0), param2-6: empty (0), param7: Target Altitude in meters
+      const success = await this.sendMavlinkCommandLong(
+        22 /* MAV_CMD_NAV_TAKEOFF */,
+        0, 0, 0, 0, 0, 0,
+        Number(targetAltMeters)
+      );
+
+      this.logDiagnostic('MAVLINK', `[TAKEOFF] Target altitude ${targetAltMeters}m commanded (Sent: ${success})`, success ? 'success' : 'warn');
       this.notifyTelemetry();
       return true;
     } else {

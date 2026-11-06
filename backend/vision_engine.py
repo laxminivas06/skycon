@@ -409,6 +409,24 @@ class VisionEngine:
             two_digits = self._extract_two_digits(val)
             return val, two_digits
 
+        # Pass 5: 2x Super-Resolution Upscaling with Bilateral Edge Filter (for distant QR codes at 3.5m-5m)
+        if roi.shape[0] < 320 or roi.shape[1] < 320:
+            upscaled = cv2.resize(roi, (0, 0), fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+            up_gray = cv2.cvtColor(upscaled, cv2.COLOR_BGR2GRAY)
+            bilateral = cv2.bilateralFilter(up_gray, d=5, sigmaColor=75, sigmaSpace=75)
+            clahe_up = self.clahe.apply(bilateral)
+
+            val, _, _ = self.qr_detector.detectAndDecode(clahe_up)
+            if val:
+                two_digits = self._extract_two_digits(val)
+                return val, two_digits
+
+            _, up_otsu = cv2.threshold(clahe_up, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            val, _, _ = self.qr_detector.detectAndDecode(up_otsu)
+            if val:
+                two_digits = self._extract_two_digits(val)
+                return val, two_digits
+
         return None, None
 
     def _extract_two_digits(self, raw: str) -> Optional[str]:

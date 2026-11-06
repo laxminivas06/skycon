@@ -1361,8 +1361,12 @@ export class GroundStationMissionService {
         await mavlinkService.setFlightMode('GUIDED');
         await mavlinkService.commandTakeoff(alt);
 
-        // Wait 2.5 seconds for motors to spool up and vehicle to establish climb
-        await new Promise((r) => setTimeout(r, 2500));
+        // Wait for vehicle to lift off ground
+        const liftOffStart = Date.now();
+        while (Date.now() - liftOffStart < 4000) {
+          await new Promise((r) => setTimeout(r, 200));
+          if ((mavlinkService.getTelemetry().altitude || 0) > 0.8) break;
+        }
       }
 
       // Step 3: Direct Guided Shape Execution (Directly GUIDED mode - Never AUTO or LOITER)
@@ -1397,8 +1401,17 @@ export class GroundStationMissionService {
     if (this.guidedSequencerActive) return;
     this.guidedSequencerActive = true;
 
-    // Wait 7s for takeoff climb to target altitude
-    await new Promise((r) => setTimeout(r, 7000));
+    // Telemetry-Gated Verification: Actively verify aircraft reaches target altitude before starting spiral navigation
+    console.log(`[GCS Mission] Verifying aircraft climb to ${alt}m before engaging waypoints...`);
+    const climbStartTime = Date.now();
+    while (this.guidedSequencerActive && Date.now() - climbStartTime < 12000) {
+      const curAlt = mavlinkService.getTelemetry().altitude || 0;
+      if (curAlt >= (alt - 0.5)) {
+        console.log(`[GCS Mission] Target altitude confirmed (${curAlt.toFixed(1)}m / ${alt}m). Beginning waypoint navigation.`);
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 350));
+    }
 
     for (let i = 0; i < waypoints.length; i++) {
       if (!this.guidedSequencerActive) break;
@@ -1415,14 +1428,14 @@ export class GroundStationMissionService {
 
       await mavlinkService.flyToPosition(wp.lat, wp.lng, targetAlt, speed);
 
-      // Monitor distance to waypoint (advance when <= 3.5m or after 15s timeout)
+      // Monitor distance to waypoint (tightened 2.0m radius prevents corner-cutting during spiral search)
       const startWpTime = Date.now();
       while (this.guidedSequencerActive && Date.now() - startWpTime < 15000) {
         const cur = mavlinkService.getTelemetry();
         const dy = (cur.latitude - wp.lat) * 111320;
         const dx = (cur.longitude - wp.lng) * 111320 * Math.cos((wp.lat * Math.PI) / 180);
         const dist = Math.hypot(dx, dy);
-        if (dist <= 3.5) break;
+        if (dist <= 2.0) break;
         await new Promise((r) => setTimeout(r, 600));
       }
     }
