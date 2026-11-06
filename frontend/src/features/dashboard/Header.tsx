@@ -199,7 +199,7 @@ export const Header: React.FC<HeaderProps> = ({
   const shortDiagnosticString = `${diagnosticWifiText} | ${diagnosticMavText} | ${diagnosticGpsText}`;
 
   return (
-    <header className="h-[68px] w-full px-3 sm:px-4 bg-[var(--uav-header)] border-b border-[var(--uav-card-border)] flex items-center justify-between select-none shrink-0 z-40 shadow-sm gap-2">
+    <header className="h-[68px] w-full px-2 sm:px-4 bg-[var(--uav-header)] border-b border-[var(--uav-card-border)] flex items-center justify-between select-none shrink-0 z-40 shadow-sm gap-1.5 flex-nowrap overflow-x-hidden">
       {/* 1. Left: Brand, Wordmark & Mode Tabs */}
       <div className="flex items-center gap-2.5 sm:gap-3 shrink-0">
         {/* Custom Quadcopter Glyph */}
@@ -339,7 +339,7 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* Indicator A: Wi-Fi / Network Status */}
           <div
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] border text-[10px] sm:text-[11px] font-mono transition-colors ${wifiConfig.bg}`}
+            className={`flex items-center gap-1 px-2 py-1 rounded-[6px] border text-[10px] font-mono shrink-0 transition-colors ${wifiConfig.bg}`}
             title={
               !connState.isStarted
                 ? 'Wi-Fi: Disconnected. Click START to initialize.'
@@ -353,7 +353,7 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* Indicator B: MAVLink Connection Status */}
           <div
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] border text-[10px] sm:text-[11px] font-mono transition-colors ${mavlinkConfig.bg}`}
+            className={`flex items-center gap-1 px-2 py-1 rounded-[6px] border text-[10px] font-mono shrink-0 transition-colors ${mavlinkConfig.bg}`}
             title={
               !connState.isStarted
                 ? 'MAVLink: Disconnected. Click START to connect.'
@@ -367,7 +367,7 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* Indicator C: Pixhawk GPS / Satellites Status */}
           <div
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] border text-[10px] sm:text-[11px] font-mono transition-colors ${gpsConfig.bg}`}
+            className={`flex items-center gap-1 px-2 py-1 rounded-[6px] border text-[10px] font-mono shrink-0 transition-colors ${gpsConfig.bg}`}
             title={
               !connState.isStarted
                 ? 'GPS: GPS Unavailable. Click START to monitor Pixhawk GPS.'

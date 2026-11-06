@@ -563,7 +563,7 @@ export const GoogleMapGroundStation: React.FC<GoogleMapGroundStationProps> = ({
       if (drawnPoints.length >= 2) {
         if (activeMissionType === 'POLYGON_GRID') {
           const poly = L.polygon(
-            drawnPoints.map((p) => [p.lat, p.lng]),
+            drawnPoints.map((p) => [p.lat, p.lng]) as any,
             {
               color: '#3b82f6',
               weight: 2.5,
@@ -575,7 +575,7 @@ export const GoogleMapGroundStation: React.FC<GoogleMapGroundStationProps> = ({
           poly.addTo(drawingLayerRef.current);
         } else {
           const line = L.polyline(
-            drawnPoints.map((p) => [p.lat, p.lng]),
+            drawnPoints.map((p) => [p.lat, p.lng]) as any,
             {
               color: '#f59e0b',
               weight: 3,

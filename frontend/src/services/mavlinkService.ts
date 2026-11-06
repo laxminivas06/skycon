@@ -4113,33 +4113,65 @@ class MAVLinkService {
 
   private startSimulationTelemetryLoop() {
     if (this.simInterval) clearInterval(this.simInterval);
+    let simStep = 0;
     this.simInterval = setInterval(() => {
       if (this.connectionState.connectionType !== 'SIMULATED') return;
+      simStep++;
       const now = Date.now();
       this.connectionState.lastHeartbeat = now;
       this.connectionState.heartbeatHz = 2.0;
       this.telemetry.gps.lastUpdated = now;
 
+      // Realistic Autonomous Mission Simulation Sequence
+      // Step 2: Arm and launch AUTO lawnmower sweep
+      if (simStep === 2) {
+        this.telemetry.isArmed = true;
+        this.telemetry.flightMode = 'AUTO';
+        this.telemetry.targetAltitude = 3.5;
+        this.addStatusMessage('INFO', 6, 'SITL: Aircraft Armed -> Switched to AUTO Grid Sweep');
+      }
+
+      // Step 12: Vision Brain acquires Intelligence Cache Box -> GUIDED descent
+      if (simStep === 12) {
+        this.telemetry.flightMode = 'GUIDED';
+        this.telemetry.targetAltitude = 1.2;
+        this.addStatusMessage('NOTICE', 5, 'VISION: Target Box Acquired! Guided visual servoing descent to 1.2m');
+      }
+
+      // Step 18: QR Code Decoded at 1.2m AGL
+      if (simStep === 18) {
+        this.addStatusMessage('NOTICE', 5, 'STATUSTEXT: QR_CODE:48 VERIFIED AT 1.2m');
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('sae:qr_alert', {
+            detail: { digits: '48', rawText: 'QR_CODE:48', timestamp: Date.now() }
+          }));
+        }
+      }
+
+      // Step 22: Automatic RTL engagement
+      if (simStep === 22) {
+        this.telemetry.flightMode = 'RTL';
+        this.telemetry.targetAltitude = 15.0; // RTL climb
+        this.addStatusMessage('NOTICE', 5, 'SITL: Target Recon Complete -> Automatic RTL Engaged');
+      }
+
+      // Altitude and motion tracking
       if (this.telemetry.isArmed && (this.telemetry.flightMode === 'AUTO' || this.telemetry.flightMode === 'GUIDED')) {
-        const targetAlt = this.telemetry.targetAltitude || 10;
+        const targetAlt = this.telemetry.targetAltitude || 3.5;
         const diff = +(targetAlt - this.telemetry.altitude).toFixed(1);
         if (diff > 0.2) {
-          // Climbing automatically
           this.telemetry.altitude = +(this.telemetry.altitude + 0.5).toFixed(1);
           this.telemetry.verticalSpeed = 1.5;
         } else if (diff < -0.2) {
-          // Descending in controlled manner
-          this.telemetry.altitude = +(this.telemetry.altitude - 0.4).toFixed(1);
-          this.telemetry.verticalSpeed = -1.2;
+          this.telemetry.altitude = +(this.telemetry.altitude - 0.3).toFixed(1);
+          this.telemetry.verticalSpeed = -1.0;
         } else {
-          // Altitude reached and held
           this.telemetry.altitude = targetAlt;
           this.telemetry.verticalSpeed = 0.0;
-          this.telemetry.groundSpeed = 6.2;
+          this.telemetry.groundSpeed = 2.5; // ADDC 2.5 m/s search speed
           this.searchProgressCount = Math.min(100, this.searchProgressCount + 1);
           this.telemetry.searchProgress = this.searchProgressCount;
 
-          // Move along simWaypoints
           if (this.simWaypoints.length > 0) {
             const targetWp = this.simWaypoints[this.currentWpIndex % this.simWaypoints.length];
             const dLat = targetWp.lat - this.telemetry.latitude;
@@ -4156,7 +4188,34 @@ class MAVLinkService {
             }
           }
         }
-      } else if (this.telemetry.flightMode === 'RTL' || this.telemetry.flightMode === 'LAND') {
+      } else if (this.telemetry.flightMode === 'RTL') {
+        if (simStep < 30) {
+          // Returning to home
+          const dLat = this.homePoint.latitude - this.telemetry.latitude;
+          const dLon = this.homePoint.longitude - this.telemetry.longitude;
+          const dist = Math.hypot(dLat, dLon);
+          if (dist > 0.00002) {
+            this.telemetry.latitude += (dLat / dist) * 0.00003;
+            this.telemetry.longitude += (dLon / dist) * 0.00003;
+            this.telemetry.gps.latitude = this.telemetry.latitude;
+            this.telemetry.gps.longitude = this.telemetry.longitude;
+            this.telemetry.groundSpeed = 4.0;
+          }
+        } else {
+          // Final landing descent
+          if (this.telemetry.altitude > 0.2) {
+            this.telemetry.altitude = +(this.telemetry.altitude - 0.4).toFixed(1);
+            this.telemetry.verticalSpeed = -1.2;
+            this.telemetry.groundSpeed = 0.5;
+          } else {
+            this.telemetry.altitude = 0.0;
+            this.telemetry.verticalSpeed = 0.0;
+            this.telemetry.groundSpeed = 0.0;
+            this.telemetry.isArmed = false;
+            this.telemetry.flightMode = 'DISARMED';
+          }
+        }
+      } else if (this.telemetry.flightMode === 'LAND') {
         if (this.telemetry.altitude > 0.2) {
           this.telemetry.altitude = +(this.telemetry.altitude - 0.4).toFixed(1);
           this.telemetry.verticalSpeed = -1.2;
@@ -4167,19 +4226,6 @@ class MAVLinkService {
           this.telemetry.isArmed = false;
           this.telemetry.flightMode = 'DISARMED';
         }
-      }
-
-      if (this.telemetry.isArmed && this.telemetry.altitude > 0.5) {
-        this.telemetry.pitch = +(Math.sin(now / 1500) * 2.5).toFixed(1);
-        this.telemetry.roll = +(Math.cos(now / 1200) * 1.8).toFixed(1);
-        if (this.telemetry.verticalSpeed !== 0) {
-          this.telemetry.heading = Math.round((now / 100) % 360);
-        }
-        this.telemetry.airSpeed = +(this.telemetry.groundSpeed * 1.05 + 0.3).toFixed(1);
-      } else {
-        this.telemetry.pitch = 0.0;
-        this.telemetry.roll = 0.0;
-        this.telemetry.airSpeed = 0.0;
       }
 
       // Update simulated magnetometer sensing & compass health

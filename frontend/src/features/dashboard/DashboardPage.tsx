@@ -29,6 +29,7 @@ import { AutonomousMissionControlCard } from './AutonomousMissionControlCard';
 import { PreflightValidationModal } from './PreflightValidationModal';
 import { MapPanel } from './MapPanel';
 import { CameraFeed } from './CameraFeed';
+import { QrVisionTelemetryCard } from './QrVisionTelemetryCard';
 import { GeofencePanel } from './GeofencePanel';
 import { WaypointManager } from './WaypointManager';
 import { FlightParams } from './FlightParams';
@@ -51,8 +52,25 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   const telemetry = useDashboardTelemetry();
   // Section 3: Two Primary Mission Modes (MANUAL and AUTONOMOUS)
   const [missionMode, setMissionMode] = useState<'MANUAL' | 'AUTONOMOUS'>(
-    () => (localStorage.getItem('sae_gcs_mission_mode') as 'MANUAL' | 'AUTONOMOUS') || 'MANUAL'
+    () => (localStorage.getItem('sae_gcs_mission_mode') as 'MANUAL' | 'AUTONOMOUS') || 'AUTONOMOUS'
   );
+  const [autonomyLock, setAutonomyLock] = useState<boolean>(() => {
+    return typeof window !== 'undefined' && localStorage.getItem('sae_autonomy_lock') === 'true';
+  });
+
+  const handleToggleAutonomyLock = () => {
+    const next = !autonomyLock;
+    setAutonomyLock(next);
+    try {
+      localStorage.setItem('sae_autonomy_lock', String(next));
+    } catch {}
+    audioService.playBeep(next ? 950 : 500, 80);
+    showNotification(
+      next
+        ? '🔒 AUTONOMY LOCK ACTIVE (ADDC Rule 3.3.1): Manual map clicks and mode switches locked.'
+        : '🔓 AUTONOMY LOCK RELEASED: Manual control unlocked.'
+    );
+  };
   const [activeTab, setActiveTab] = useState<'Plan' | 'Fly' | 'Logs'>('Fly');
   const [activeNav, setActiveNav] = useState<string>('Dashboard');
   const [mobileView, setMobileView] = useState<'telemetry' | 'map' | 'operations'>('map');
@@ -445,6 +463,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         }),
       }).catch(() => {});
 
+      setAutonomyLock(true);
+      try { localStorage.setItem('sae_autonomy_lock', 'true'); } catch {}
       setActiveMissionData({
         elapsedSeconds: 0,
         remainingSeconds: timeLimitMin * 60,
@@ -720,7 +740,13 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           <MapPanel
             telemetry={telemetry}
             className="h-full w-full min-h-0 flex-1 border-0 rounded-none"
-            onWaypointAdded={(_lat, _lon) => showNotification('Waypoint added to mission plan')}
+            onWaypointAdded={(_lat, _lon) => {
+              if (autonomyLock) {
+                showNotification('🔒 Autonomy Lock Active (ADDC Rule 3.3.1): Manual waypoint editing disabled.');
+                return;
+              }
+              showNotification('Waypoint added to mission plan');
+            }}
           />
 
           {/* PERSISTENT GCS DECODED PAYLOAD CARD */}

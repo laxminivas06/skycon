@@ -73,6 +73,15 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ className = '', telemetr
   const [isApproaching, setIsApproaching] = useState<boolean>(false);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
 
+  // Samsung S24 Phone Stream & Test Pattern State
+  const [useTestPattern, setUseTestPattern] = useState<boolean>(false);
+  const [phoneStreamUrl, setPhoneStreamUrl] = useState<string>('http://192.168.43.15:8080/video');
+  const [streamRetryCount, setStreamRetryCount] = useState<number>(0);
+  const [streamError, setStreamError] = useState<boolean>(false);
+  const testPatternCanvasRef = useRef<HTMLCanvasElement>(null);
+  const phoneStreamImgRef = useRef<HTMLImageElement>(null);
+  const retryTimerRef = useRef<any>(null);
+
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const frameImgRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -162,11 +171,14 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ className = '', telemetr
         let w = 0;
         let h = 0;
 
-        const video = remoteVideoRef.current;
-        if (video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
-          source = video;
-          w = video.videoWidth;
-          h = video.videoHeight;
+        if (useTestPattern && testPatternCanvasRef.current) {
+          source = testPatternCanvasRef.current;
+          w = testPatternCanvasRef.current.width;
+          h = testPatternCanvasRef.current.height;
+        } else if (remoteVideoRef.current && remoteVideoRef.current.readyState >= 2 && remoteVideoRef.current.videoWidth > 0) {
+          source = remoteVideoRef.current;
+          w = remoteVideoRef.current.videoWidth;
+          h = remoteVideoRef.current.videoHeight;
         } else if (frameImgRef.current && frameImgRef.current.complete && frameImgRef.current.naturalWidth > 0) {
           source = frameImgRef.current;
           w = frameImgRef.current.naturalWidth;
@@ -315,7 +327,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ className = '', telemetr
   const streamStatusConfig = getStreamStatusConfig(streamStatus);
   const StreamStatusIcon = streamStatusConfig.icon;
 
-  const isFeedActive = (hasWebRtcVideo || Boolean(liveFrame)) || streamStatus === 'LIVE_FEED_CONNECTED';
+  const isFeedActive = useTestPattern || (hasWebRtcVideo || Boolean(liveFrame)) || streamStatus === 'LIVE_FEED_CONNECTED';
 
   const handleFullscreen = () => {
     if (!containerRef.current) return;
@@ -331,6 +343,29 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ className = '', telemetr
       title="DRONE & OPTICAL INTELLIGENCE"
       action={
         <div className="flex items-center gap-1.5 relative flex-wrap justify-end">
+          {/* Manual Fallback Test Pattern Toggle */}
+          <button
+            type="button"
+            onClick={() => {
+              const next = !useTestPattern;
+              setUseTestPattern(next);
+              showNotification(
+                next
+                  ? 'FALLBACK TEST PATTERN: ON (Simulated QR [4,8] Active)'
+                  : 'TEST PATTERN: OFF (Switched to Camera Stream)'
+              );
+            }}
+            className={`px-2 py-0.5 rounded-[4px] text-[10px] font-mono font-bold transition flex items-center gap-1 cursor-pointer ${
+              useTestPattern
+                ? 'bg-amber-500 text-slate-950 font-extrabold shadow-sm ring-1 ring-amber-400'
+                : 'bg-[#161B22] border border-slate-700 text-slate-400 hover:text-white'
+            }`}
+            title="Toggle Fallback Test Pattern for bench testing without phone camera"
+          >
+            <span>{useTestPattern ? 'PATTERN ON' : 'TEST PATTERN'}</span>
+            {useTestPattern && <span className="w-1.5 h-1.5 rounded-full bg-slate-950 animate-ping" />}
+          </button>
+
           {/* Drone Core Camera Status Pill */}
           <div
             className={`flex items-center gap-1.5 px-2.5 py-0.5 rounded-[4px] text-[10px] font-mono font-bold transition shadow-sm ${streamStatusConfig.badgeClass}`}
@@ -399,6 +434,16 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ className = '', telemetr
         >
           {isFeedActive ? (
             <div className="w-full h-full relative flex items-center justify-center bg-black overflow-hidden">
+              {/* Fallback Test Pattern Animated Canvas */}
+              {useTestPattern && (
+                <canvas
+                  ref={testPatternCanvasRef}
+                  width={640}
+                  height={480}
+                  className="w-full h-full object-contain select-none"
+                />
+              )}
+
               {/* WebRTC Video Stream Element */}
               <video
                 ref={remoteVideoRef}

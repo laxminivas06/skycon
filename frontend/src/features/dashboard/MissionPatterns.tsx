@@ -129,7 +129,7 @@ export const MissionPatterns: React.FC<MissionPatternsProps> = ({
         const p2 = computeDestination(center.lat, center.lng, 20, 45);
         const p3 = computeDestination(center.lat, center.lng, 20, 135);
         const p4 = computeDestination(center.lat, center.lng, 20, 225);
-        groundStationMissionService.generatePolygonGridMission([p1, p2, p3, p4], home, 20, 4.5, 6.0);
+        groundStationMissionService.generatePolygonGridMission([p1, p2, p3, p4], home, 3.5, 2.5, 2.5);
         break;
       }
 
@@ -139,7 +139,7 @@ export const MissionPatterns: React.FC<MissionPatternsProps> = ({
         const p2 = computeDestination(center.lat, center.lng, 30, 30);
         const p3 = computeDestination(center.lat, center.lng, 30, 150);
         const p4 = computeDestination(center.lat, center.lng, 30, 210);
-        groundStationMissionService.generatePolygonGridMission([p1, p2, p3, p4], home, 25, 5.0, 8.0);
+        groundStationMissionService.generatePolygonGridMission([p1, p2, p3, p4], home, 3.5, 2.5, 2.5);
         break;
       }
 

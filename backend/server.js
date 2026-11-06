@@ -101,6 +101,19 @@ let missions = loadJsonSafe(MISSIONS_FILE, []);
 const MAX_RECON_DETECTIONS = 50;
 let reconDetections = loadJsonSafe(DETECTIONS_FILE, []);
 
+// In-Memory cache for the latest QR Alert (instantly dispatched to reconnected GCS phones)
+let latestQrAlert = null;
+if (Array.isArray(reconDetections) && reconDetections.length > 0) {
+  const existingQr = reconDetections.find(d => d.twoDigitCode);
+  if (existingQr) {
+    latestQrAlert = {
+      type: 'QR_ALERT',
+      digits: String(existingQr.twoDigitCode),
+      timestamp: existingQr.timestamp || Date.now()
+    };
+  }
+}
+
 function getActiveMission() {
   return missions.find(m => (m.status === 'EXECUTING' || m.status === 'ACTIVE') && (!m.deadline || Date.now() < m.deadline)) || null;
 }
@@ -850,6 +863,40 @@ function handleConnectorConnection(ws) {
           esp32LastError = msg.error || '';
           console.log(`[CONNECTOR REPORT] ESP32 status: ${msg.status} ${esp32LastError ? `(${esp32LastError})` : ''}`);
           broadcastStatusToBrowsers();
+        } else if (msg.type === 'QR_ALERT' && msg.digits) {
+          console.log(`[QR ALERT FROM DRONE] 🚨 Intercepted code: ${msg.digits}`);
+          latestQrAlert = {
+            type: 'QR_ALERT',
+            digits: String(msg.digits),
+            timestamp: msg.timestamp || Date.now()
+          };
+          const detection = {
+            detectionId: `DET_QR_${Date.now()}`,
+            payload: `QR_CODE:${msg.digits}`,
+            twoDigitCode: String(msg.digits),
+            serverReceivedTime: Date.now(),
+            timestamp: msg.timestamp || Date.now(),
+            status: 'QR_DECODED'
+          };
+          reconDetections = [detection, ...reconDetections.slice(0, MAX_RECON_DETECTIONS - 1)];
+          saveJsonAtomic(DETECTIONS_FILE, reconDetections);
+
+          const alertBroadcast = JSON.stringify(latestQrAlert);
+          const qrTwoDigitMsg = JSON.stringify({
+            type: 'QR_TWO_DIGIT_DETECTED',
+            twoDigitCode: String(msg.digits),
+            rawPayload: `QR_CODE:${msg.digits}`,
+            timestamp: Date.now()
+          });
+
+          for (const client of browserSockets) {
+            if (client.readyState === WebSocket.OPEN) {
+              try {
+                client.send(alertBroadcast, noop);
+                client.send(qrTwoDigitMsg, noop);
+              } catch (e) {}
+            }
+          }
         } else if (
           msg.type === 'CAMERA_STREAM_SIGNAL' ||
           msg.type === 'CAMERA_FRAME_DATA' ||
@@ -915,6 +962,11 @@ function handleBrowserConnection(ws) {
   } catch (e) {}
 
   // Synchronize recent recon detections if any exist
+  if (latestQrAlert) {
+    try {
+      ws.send(JSON.stringify(latestQrAlert), noop);
+    } catch (e) {}
+  }
   if (reconDetections.length > 0) {
     try {
       ws.send(JSON.stringify({
@@ -1001,6 +1053,20 @@ function handleBrowserConnection(ws) {
 
         // Direct Drone Core Camera Stream & Signaling Forwarding (WebRTC / Frames)
         if (
+          msg.type === 'COMMAND_LONG' ||
+          msg.type === 'MISSION_ITEM_INT' ||
+          msg.type === 'MISSION_COUNT' ||
+          msg.type === 'MAVLINK_COMMAND' ||
+          msg.type === 'GCS_COMMAND' ||
+          msg.type === 'SET_MODE' ||
+          msg.type === 'ARM' ||
+          msg.type === 'DISARM'
+        ) {
+          if (connectorSocket && connectorSocket.readyState === WebSocket.OPEN) {
+            connectorSocket.send(text, noop);
+          }
+        }
+        if (
           msg.type === 'CAMERA_STREAM_SIGNAL' ||
           msg.type === 'CAMERA_FRAME_DATA' ||
           msg.type === 'CAMERA_STATUS_UPDATE' ||
@@ -1027,7 +1093,7 @@ function handleBrowserConnection(ws) {
   });
 }
 
-// Low-latency Heartbeat & Zombie Socket Pruning (Runs every 20 seconds, requires >40s silence to prune)
+// Low-latency Heartbeat & Zombie Socket Pruning (Runs every 10 seconds to prevent Render tunnel drop)
 const heartbeatInterval = setInterval(() => {
   const now = Date.now();
 
@@ -1061,7 +1127,7 @@ const heartbeatInterval = setInterval(() => {
       } catch (e) {}
     }
   }
-}, 20000);
+}, 10000); // 10-second heartbeat ensures Render load balancers never drop TLS tunnel mid-flight
 
 heartbeatInterval.unref();
 

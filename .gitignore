@@ -60,3 +60,9 @@ graphify-out/.graphify_uncached.txt
 tests/test_output_edge_drone/
 *.db
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+

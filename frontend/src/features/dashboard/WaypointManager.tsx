@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Settings, Trash2, Download, Upload } from 'lucide-react';
 import { Card } from '../../ui/Card';
 import { Segmented } from '../../ui/Segmented';
-import { groundStationMissionService } from '../../services/groundStationMissionService';
+import { groundStationMissionService, computeDestination } from '../../services/groundStationMissionService';
+import { mavlinkService } from '../../services/mavlinkService';
 import { GroundStationMission, GroundStationWaypoint } from '../../types/groundStationMap';
 import { audioService } from '../../services/audioService';
 
@@ -244,7 +245,7 @@ export const WaypointManager: React.FC<WaypointManagerProps> = ({
           <div className="grid grid-cols-2 gap-2 text-[10px]">
             <div className="flex flex-col">
               <span className="text-[var(--uav-muted)]">Grid Spacing:</span>
-              <span className="font-mono font-bold text-white">6.0 m</span>
+              <span className="font-mono font-bold text-emerald-400">2.5 m (ADDC)</span>
             </div>
             <div className="flex flex-col">
               <span className="text-[var(--uav-muted)]">Orbit Radius:</span>
@@ -252,15 +253,42 @@ export const WaypointManager: React.FC<WaypointManagerProps> = ({
             </div>
             <div className="flex flex-col">
               <span className="text-[var(--uav-muted)]">Search Alt:</span>
-              <span className="font-mono font-bold text-white">20.0 m</span>
+              <span className="font-mono font-bold text-amber-400">3.5 m AGL</span>
             </div>
             <div className="flex flex-col">
-              <span className="text-[var(--uav-muted)]">Spiral Loops:</span>
-              <span className="font-mono font-bold text-white">4 Loops</span>
+              <span className="text-[var(--uav-muted)]">QR Hover Alt:</span>
+              <span className="font-mono font-bold text-cyan-400">1.2 m AGL</span>
             </div>
           </div>
           <div className="text-[10px] text-[var(--uav-muted)] pt-1 border-t border-[var(--uav-card-border)]">
-            Select bottom "Mission Patterns" cards (Grid, Spiral, Circle) to generate flight trajectories
+            <div className="flex items-center justify-between">
+              <span>ADDC 2.5m/3.5m</span>
+              <button
+                type="button"
+                onClick={() => {
+                  const telem = mavlinkService.getTelemetry();
+                  const lat = telem.latitude || 12.9715987;
+                  const lon = telem.longitude || 77.5945627;
+                  const p1 = computeDestination(lat, lon, 25, 315);
+                  const p2 = computeDestination(lat, lon, 25, 45);
+                  const p3 = computeDestination(lat, lon, 25, 135);
+                  const p4 = computeDestination(lat, lon, 25, 225);
+                  const home = mavlinkService.getHomePoint();
+                  groundStationMissionService.generatePolygonGridMission(
+                    [p1, p2, p3, p4],
+                    home.isSet ? home : { latitude: lat, longitude: lon, altitude: 0, timestamp: Date.now(), isSet: true },
+                    3.5,
+                    2.5,
+                    2.5
+                  );
+                  setActiveTab('Waypoints');
+                  audioService.playBeep(980, 80);
+                }}
+                className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[9.5px] font-mono cursor-pointer transition shadow"
+              >
+                1-CLICK 50m GRID
+              </button>
+            </div>
           </div>
         </div>
       )}

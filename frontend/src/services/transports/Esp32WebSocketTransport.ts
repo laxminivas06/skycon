@@ -733,6 +733,11 @@ export class Esp32WebSocketTransport implements MavlinkTransport {
             // Check for JSON status message from Secure Cloud Relay
             try {
               const meta = JSON.parse(event.data);
+              if (meta && (meta.type === 'QR_ALERT' || meta.type === 'QR_TWO_DIGIT_DETECTED')) {
+                if (typeof window !== 'undefined') {
+                  window.dispatchEvent(new CustomEvent('sae:qr_alert', { detail: meta }));
+                }
+              }
               if (meta && (meta.type === 'RELAY_STATUS' || meta.type === 'connection_ack')) {
                 const isEspOnline = meta.esp32Online === true;
                 const isConnOnline = meta.connectorOnline !== false && (meta.connectorOnline === true || isEspOnline);
@@ -991,7 +996,7 @@ export class Esp32WebSocketTransport implements MavlinkTransport {
     }
     try {
       // Zero-copy direct transmit: modern browsers accept ArrayBufferView (Uint8Array) directly without copying
-      this.socket!.send(data);
+      this.socket!.send(data as any);
       this.cumulativeTxBytes += data.length;
       return true;
     } catch (e: any) {

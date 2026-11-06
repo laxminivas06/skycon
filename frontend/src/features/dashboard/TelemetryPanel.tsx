@@ -140,7 +140,7 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
 
   // Arc Gauge Calculations (Circumference of r=32 is 201.06)
   const arcCircumference = 201;
-  const altMax = 60; // Standard 60m field ceiling
+  const altMax = 25; // Standard 25m field ceiling (synced with geofence)
   const altPercent = Math.min(1, alt / altMax);
   const altOffset = arcCircumference * (1 - altPercent * 0.75);
 

@@ -344,12 +344,12 @@ export const MapPanel: React.FC<MapPanelProps> = ({
         setPolygonGeofenceCount(polygonGeofencePtsRef.current.length);
         if (!polygonGeofenceLayerRef.current) {
           polygonGeofenceLayerRef.current = L.polygon(
-            polygonGeofencePtsRef.current.map((p) => [p.lat, p.lng]),
+            polygonGeofencePtsRef.current.map((p) => [p.lat, p.lng]) as any as any,
             { color: '#f59e0b', weight: 2.5, dashArray: '4, 4', fillOpacity: 0.2 }
           ).addTo(map);
         } else {
           polygonGeofenceLayerRef.current.setLatLngs(
-            polygonGeofencePtsRef.current.map((p) => [p.lat, p.lng])
+            polygonGeofencePtsRef.current.map((p) => [p.lat, p.lng]) as any
           );
         }
         audioService.playBeep(920, 50);
@@ -1528,98 +1528,77 @@ export const MapPanel: React.FC<MapPanelProps> = ({
         </div>
       </div>
 
-      {/* Bottom Left Floating GPS Status Card & Scale Bar */}
-      <div className="absolute left-2.5 bottom-2.5 z-20 flex flex-col gap-2 pointer-events-none">
-        {/* GPS Status HUD */}
-        <div className="w-64 rounded-[8px] border border-[var(--uav-card-border)] bg-[#0B1424]/95 backdrop-blur-sm p-2.5 text-[11px] font-sans flex flex-col gap-1.5 shadow-xl pointer-events-auto">
-          {/* Header */}
-          <div className="flex items-center justify-between pb-1.5 border-b border-[var(--uav-card-border)]">
-            <div className="flex items-center gap-1.5">
-              <span className={`w-2 h-2 rounded-full ${droneHasValidCoords ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}`} />
-              <span className="font-semibold text-white text-[11px]">Pixhawk FC GPS</span>
-            </div>
-
-            <span className="font-mono text-[9px] text-[var(--uav-muted)]">
-              {followMode === 'drone' ? 'FOLLOWING DRONE' : 'FREE CAM'}
+      {/* Sleek Single-Row Map Bottom HUD & Scale Bar */}
+      <div className="absolute left-3 bottom-2.5 right-3 z-20 flex items-center justify-between pointer-events-none gap-2">
+        {/* Compact Single-Row Telemetry HUD Bar */}
+        <div className="flex items-center gap-2 bg-[#0B1424]/95 backdrop-blur-md border border-[var(--uav-card-border)] rounded-lg px-3 py-1.5 text-[11px] font-mono shadow-xl pointer-events-auto overflow-x-auto max-w-full">
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className={`w-2 h-2 rounded-full ${droneHasValidCoords ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}`} />
+            <span className="font-bold text-white text-[10px] uppercase">
+              {droneHasValidCoords ? telemetry.gpsFixType.replace('_', ' ') : 'NO GPS'}
             </span>
           </div>
 
-          {/* Drone FC View */}
-          <div className="space-y-1">
-            <div className="flex items-center justify-between text-[10px]">
-              <span className="text-[var(--uav-muted)]">Fix Status:</span>
-              <span className={`font-bold ${droneHasValidCoords ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {droneHasValidCoords
-                  ? `${telemetry.gpsFixType.replace('_', ' ')} (${telemetry.satellites} Sats)`
-                  : 'Pixhawk GPS Unavailable'}
-              </span>
-            </div>
-            <div className="grid grid-cols-2 text-[10px] text-[var(--uav-muted)]">
-              <span>GPS Link</span>
-              <span className={`text-right font-mono font-medium ${telemetry.isGpsLocked ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {telemetry.isGpsLocked ? 'CONNECTED ✓' : 'NO SIGNAL ✗'}
-              </span>
-              <span>Latitude</span>
-              <span className="text-right text-[var(--uav-text)] font-mono font-medium">
-                {droneHasValidCoords ? `${telemetry.latitude.toFixed(7)}°` : '--'}
-              </span>
-              <span>Longitude</span>
-              <span className="text-right text-[var(--uav-text)] font-mono font-medium">
-                {droneHasValidCoords ? `${telemetry.longitude.toFixed(7)}°` : '--'}
-              </span>
-              <span>GPS MSL Alt</span>
-              <span className="text-right text-[var(--uav-text)] font-mono font-medium">
-                {droneHasValidCoords ? `${(telemetry.gpsAltitudeMeters ?? telemetry.altitudeMeters).toFixed(1)} m` : '--'}
-              </span>
-              <span>Relative Alt</span>
-              <span className="text-right text-[var(--uav-text)] font-mono font-medium">
-                {telemetry.altitudeMeters.toFixed(1)} m
-              </span>
-              <span>Satellites</span>
-              <span className="text-right text-[var(--uav-text)] font-mono font-medium">
-                {telemetry.satellites} visible
-              </span>
-              <span>HDOP</span>
-              <span className="text-right text-[var(--uav-text)] font-mono font-medium">
-                {telemetry.hdop.toFixed(2)}
-              </span>
-              <span>Last Update</span>
-              <span className="text-right text-[var(--uav-text)] font-mono font-medium">
-                {telemetry.gpsAgeMs !== undefined
-                  ? (telemetry.gpsAgeMs < 1000 ? '<1s ago' : `${(telemetry.gpsAgeMs / 1000).toFixed(1)}s ago`)
-                  : 'Awaiting Fix'}
-              </span>
-            </div>
+          <span className="text-slate-600">|</span>
 
-            {/* Action row for drone */}
-            <div className="flex items-center justify-between pt-1 border-t border-[var(--uav-card-border)]/60 text-[10px]">
-              <button
-                type="button"
-                onClick={handleLocateDrone}
-                disabled={!droneHasValidCoords}
-                className="px-2 py-0.5 rounded bg-[#21262D] hover:bg-[#262C36] text-slate-200 hover:text-white disabled:opacity-40 transition cursor-pointer font-medium"
-              >
-                Pan to Drone
-              </button>
-              <button
-                type="button"
-                onClick={handleToggleFollow}
-                className={`px-2 py-0.5 rounded transition cursor-pointer font-medium ${
-                  followMode === 'drone'
-                    ? 'bg-emerald-600/30 text-emerald-300 border border-emerald-500/50'
-                    : 'bg-[#21262D] hover:bg-[#262C36] text-slate-200 hover:text-white'
-                }`}
-              >
-                {followMode === 'drone' ? 'Stop Follow' : 'Follow Drone'}
-              </button>
-            </div>
+          <div className="flex items-center gap-1 shrink-0 text-[10px]">
+            <span className="text-[var(--uav-muted)]">SATS:</span>
+            <span className="font-bold text-emerald-400">{telemetry.satellites}</span>
+          </div>
+
+          <span className="text-slate-600">|</span>
+
+          <div className="flex items-center gap-1 shrink-0 text-[10px]">
+            <span className="text-[var(--uav-muted)]">HDOP:</span>
+            <span className="font-bold text-cyan-300">{telemetry.hdop.toFixed(2)}</span>
+          </div>
+
+          <span className="text-slate-600 hidden sm:inline">|</span>
+
+          <div className="hidden sm:flex items-center gap-1 shrink-0 text-[10px]">
+            <span className="text-[var(--uav-muted)]">POS:</span>
+            <span className="font-bold text-slate-200">
+              {droneHasValidCoords ? `${telemetry.latitude.toFixed(6)}°, ${telemetry.longitude.toFixed(6)}°` : '--'}
+            </span>
+          </div>
+
+          <span className="text-slate-600">|</span>
+
+          <div className="flex items-center gap-1 shrink-0 text-[10px]">
+            <span className="text-[var(--uav-muted)]">ALT:</span>
+            <span className="font-bold text-amber-400">{telemetry.altitudeMeters.toFixed(1)}m</span>
+          </div>
+
+          <span className="text-slate-600">|</span>
+
+          {/* Action Buttons */}
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={handleLocateDrone}
+              disabled={!droneHasValidCoords}
+              className="px-2 py-0.5 rounded bg-[#21262D] hover:bg-[#262C36] text-slate-200 hover:text-white disabled:opacity-40 transition cursor-pointer font-bold text-[10px]"
+            >
+              Pan to Drone
+            </button>
+            <button
+              type="button"
+              onClick={handleToggleFollow}
+              className={`px-2 py-0.5 rounded transition cursor-pointer font-bold text-[10px] ${
+                followMode === 'drone'
+                  ? 'bg-emerald-600/40 text-emerald-300 border border-emerald-500/60'
+                  : 'bg-[#21262D] hover:bg-[#262C36] text-slate-200 hover:text-white'
+              }`}
+            >
+              {followMode === 'drone' ? 'Stop Follow' : 'Follow Drone'}
+            </button>
           </div>
         </div>
 
         {/* Ruler Result or Scale Bar */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0 pointer-events-auto">
           {measureDistanceMeters !== null ? (
-            <div className="flex items-center gap-1.5 px-2 py-0.5 bg-amber-950/90 border border-amber-500/80 rounded text-[10px] font-mono text-amber-200 pointer-events-auto">
+            <div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-950/90 border border-amber-500/80 rounded text-[10px] font-mono text-amber-200 shadow-md">
               <span>Distance: {measureDistanceMeters} m</span>
               <button
                 type="button"
@@ -1637,7 +1616,7 @@ export const MapPanel: React.FC<MapPanelProps> = ({
               </button>
             </div>
           ) : (
-            <div className="px-1.5 py-0.5 bg-[#0B1424]/80 border border-[var(--uav-card-border)] rounded text-[9px] font-mono text-[var(--uav-text)]">
+            <div className="px-2 py-1 bg-[#0B1424]/90 border border-[var(--uav-card-border)] rounded text-[9px] font-mono text-[var(--uav-text)] shadow-md">
               100 m
             </div>
           )}

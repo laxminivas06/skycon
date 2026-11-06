@@ -48,7 +48,7 @@ const DEFAULT_CONFIG: GeofenceConfig = {
   widthMeters: 50,
   heightMeters: 50,
   maxAltitudeMeters: 25.0,
-  minAltitudeMeters: 1.5,
+  minAltitudeMeters: 0.8,
   breachAction: 'RTL',
   anchorType: 'HOME',
   customAnchor: null,
@@ -484,7 +484,10 @@ class GeofenceService {
     }
 
     // Floor breach applies ONLY when vehicle is confirmed airborne in cruise flight
+    const flightMode = telem.flightMode || telem.mode || '';
+    const isPrecisionDescent = flightMode === 'GUIDED' || flightMode === 'LAND' || flightMode === 'RTL';
     const isFloorBreached = Boolean(
+      !isPrecisionDescent &&
       this.config.minAltitudeMeters > 0.5 &&
       telem.isArmed &&
       this.hasClimbedAboveFloor &&
