@@ -133,7 +133,8 @@ const char RENDER_CA_BUNDLE[] PROGMEM =
 #define PIXHAWK_RX_BUF    4096   // Expanded 4KB RX FIFO buffer (prevents overflow during TLS delays)
 #define PIXHAWK_TX_BUF    2048   // Expanded 2KB TX FIFO buffer
 
-const uint32_t TELEM2_BAUDS[] = {57600, 115200};
+const uint32_t TELEM2_BAUDS[] = {57600, 115200, 921600};
+const uint8_t NUM_TELEM2_BAUDS = 3;
 uint8_t currentBaudIdx = 0;
 uint32_t activePixhawkBaud = 57600;
 bool isBaudLocked = false;
@@ -531,154 +532,46 @@ void connectToCloudRelay() {
 }
 
 // =====================================================================================
-// MAVLINK PROTOCOL FRAME ASSEMBLER & QR STATUSTEXT INTERCEPTOR (CORE 1)
+// NON-BLOCKING MAVLINK TRANSPARENT STREAMER & QR STATUSTEXT INTERCEPTOR (CORE 1)
 // =====================================================================================
-enum MavParseState : uint8_t {
-  MAV_STATE_IDLE = 0,
-  MAV_STATE_GOT_STX,
-  MAV_STATE_V1_HDR,
-  MAV_STATE_V2_HDR,
-  MAV_STATE_PAYLOAD_CRC
-};
+char qrSlidingWindow[24] = {0};
+uint8_t qrWinHead = 0;
 
-struct MavFrameAssembler {
-  MavParseState state = MAV_STATE_IDLE;
-  uint8_t buffer[MAX_PACKET_LEN];
-  uint16_t index = 0;
-  uint16_t expectedLength = 0;
-  uint8_t magic = 0;
-  uint8_t payloadLen = 0;
-  uint32_t msgId = 0;
-};
+void processQrInspectionByte(uint8_t b) {
+  qrSlidingWindow[qrWinHead] = (char)b;
+  qrWinHead = (qrWinHead + 1) % sizeof(qrSlidingWindow);
 
-static MavFrameAssembler assembler;
+  char linearBuf[sizeof(qrSlidingWindow) + 1];
+  for (size_t i = 0; i < sizeof(qrSlidingWindow); ++i) {
+    linearBuf[i] = qrSlidingWindow[(qrWinHead + i) % sizeof(qrSlidingWindow)];
+  }
+  linearBuf[sizeof(qrSlidingWindow)] = '\0';
 
-// Inspect assembled MAVLink frame for MAVLINK_MSG_ID_STATUSTEXT (ID 253)
-void inspectAndHandleFrame(const uint8_t* frame, uint16_t len, uint32_t msgId, uint8_t magic) {
-  if (msgId == 253 && len >= 15) {
-    // STATUSTEXT payload starts at byte 6 in MAVLink 1, byte 10 in MAVLink 2
-    uint16_t payloadOffset = (magic == 0xFE) ? 6 : 10;
-    
-    // In MAVLink STATUSTEXT: severity (1 byte), text (50 bytes)
-    // Scan up to 50 bytes of payload for "QR_CODE:"
-    const char* payloadText = (const char*)(frame + payloadOffset + 1);
-    uint16_t maxScan = (len > payloadOffset + 1) ? (len - (payloadOffset + 1)) : 0;
-    if (maxScan > 50) maxScan = 50;
+  char* match = strstr(linearBuf, "QR_CODE:");
+  if (match) {
+    char* digitPtr = match + 8;
+    char digits[16] = {0};
+    uint8_t dIdx = 0;
+    while (dIdx < 15 && digitPtr[dIdx] >= '0' && digitPtr[dIdx] <= '9') {
+      digits[dIdx] = digitPtr[dIdx];
+      dIdx++;
+    }
+    digits[dIdx] = '\0';
 
-    for (uint16_t i = 0; i + 8 <= maxScan; ++i) {
-      if (strncmp(payloadText + i, "QR_CODE:", 8) == 0) {
-        const char* digitPtr = payloadText + i + 8;
-        char digits[16] = {0};
-        uint8_t dIdx = 0;
-        while (dIdx < 15 && digitPtr[dIdx] != '\0' && digitPtr[dIdx] != ' ' && digitPtr[dIdx] != '\r' && digitPtr[dIdx] != '\n') {
-          if (digitPtr[dIdx] >= '0' && digitPtr[dIdx] <= '9') {
-            digits[dIdx] = digitPtr[dIdx];
-            dIdx++;
-          } else {
-            break;
-          }
-        }
-        digits[dIdx] = '\0';
-
-        if (dIdx > 0 && qTxToCloud != nullptr) {
-          QueuePacket qrPkt;
-          qrPkt.type = PKT_TYPE_JSON_TEXT;
-          int n = snprintf((char*)qrPkt.data, MAX_PACKET_LEN,
-                           "{\"type\":\"QR_ALERT\",\"digits\":\"%s\",\"timestamp\":%lu}",
-                           digits, millis());
-          if (n > 0) {
-            qrPkt.length = (uint16_t)n;
-            xQueueSend(qTxToCloud, &qrPkt, 0); // Fast non-blocking enqueue
-            totalQrAlertsEmitted++;
-            Serial.printf("🎯 [QR STATUSTEXT INTERCEPTED] Digits='%s' -> Dispatched high-priority QR_ALERT!\n", digits);
-          }
-        }
-        break;
+    if (dIdx >= 2 && qTxToCloud != nullptr) {
+      QueuePacket qrPkt;
+      qrPkt.type = PKT_TYPE_JSON_TEXT;
+      int n = snprintf((char*)qrPkt.data, MAX_PACKET_LEN,
+                       "{\"type\":\"QR_ALERT\",\"digits\":\"%s\",\"timestamp\":%lu}",
+                       digits, millis());
+      if (n > 0) {
+        qrPkt.length = (uint16_t)n;
+        xQueueSend(qTxToCloud, &qrPkt, 0);
+        totalQrAlertsEmitted++;
+        Serial.printf("\n🎯 [QR STREAM INTERCEPTED] Digits='%s' -> Dispatched high-priority QR_ALERT!\n", digits);
+        memset(qrSlidingWindow, 0, sizeof(qrSlidingWindow));
       }
     }
-  }
-}
-
-// Feeds incoming raw bytes through MAVLink frame assembler
-void processIncomingUartByte(uint8_t b) {
-  totalRxBytesFromPixhawk++;
-
-  if ((b == 0xFE || b == 0xFD) && !isBaudLocked) {
-    isBaudLocked = true;
-    Serial.printf("\n🎯 [TELEM2 LOCKED] Valid MAVLink framing (0x%02X) confirmed at %lu baud!\n", b, (unsigned long)activePixhawkBaud);
-  }
-
-  switch (assembler.state) {
-    case MAV_STATE_IDLE:
-      if (b == 0xFE || b == 0xFD) {
-        assembler.magic = b;
-        assembler.buffer[0] = b;
-        assembler.index = 1;
-        assembler.msgId = 0;
-        assembler.payloadLen = 0;
-        assembler.state = MAV_STATE_GOT_STX;
-      }
-      break;
-
-    case MAV_STATE_GOT_STX:
-      assembler.buffer[assembler.index++] = b;
-      assembler.payloadLen = b;
-      if (assembler.magic == 0xFE) {
-        // MAVLink 1: Header (6 bytes: STX, LEN, SEQ, SYS, COMP, MSGID) + Payload + CRC (2 bytes)
-        assembler.expectedLength = (uint16_t)assembler.payloadLen + 8;
-        assembler.state = MAV_STATE_V1_HDR;
-      } else {
-        // MAVLink 2: Header (10 bytes) + Payload + CRC (2 bytes) + optional signature (13 bytes)
-        assembler.state = MAV_STATE_V2_HDR;
-      }
-      break;
-
-    case MAV_STATE_V1_HDR:
-      assembler.buffer[assembler.index++] = b;
-      if (assembler.index == 6) {
-        assembler.msgId = assembler.buffer[5];
-        assembler.state = MAV_STATE_PAYLOAD_CRC;
-      }
-      break;
-
-    case MAV_STATE_V2_HDR:
-      assembler.buffer[assembler.index++] = b;
-      if (assembler.index == 10) {
-        uint8_t incompatFlags = assembler.buffer[2];
-        uint8_t sigLen = (incompatFlags & 0x01) ? 13 : 0;
-        assembler.expectedLength = (uint16_t)10 + assembler.payloadLen + 2 + sigLen;
-        assembler.msgId = (uint32_t)assembler.buffer[7] |
-                          ((uint32_t)assembler.buffer[8] << 8) |
-                          ((uint32_t)assembler.buffer[9] << 16);
-        assembler.state = MAV_STATE_PAYLOAD_CRC;
-      }
-      break;
-
-    case MAV_STATE_PAYLOAD_CRC:
-      if (assembler.index < MAX_PACKET_LEN) {
-        assembler.buffer[assembler.index++] = b;
-      } else {
-        // Overflow safety reset
-        assembler.state = MAV_STATE_IDLE;
-        break;
-      }
-
-      if (assembler.index >= assembler.expectedLength) {
-        // Complete MAVLink frame assembled
-        inspectAndHandleFrame(assembler.buffer, assembler.index, assembler.msgId, assembler.magic);
-
-        // Enqueue binary telemetry frame to Cloud transmitter queue
-        if (qTxToCloud != nullptr) {
-          QueuePacket pkt;
-          pkt.type = PKT_TYPE_MAVLINK_BINARY;
-          pkt.length = assembler.index;
-          memcpy(pkt.data, assembler.buffer, assembler.index);
-          xQueueSend(qTxToCloud, &pkt, 0); // Drop if queue full to prevent stall
-        }
-
-        assembler.state = MAV_STATE_IDLE;
-      }
-      break;
   }
 }
 
@@ -686,15 +579,42 @@ void processIncomingUartByte(uint8_t b) {
 // CORE 1 TASK: HIGH-SPEED MAVLINK UART DRIVER (1MS DRAIN LOOP)
 // =====================================================================================
 void taskUartReceiver(void* pvParameters) {
-  Serial.println("⚡ [TASK CORE 1] UART Receiver & MAVLink Parser active on Core 1 (Priority 3).");
+  Serial.println("⚡ [TASK CORE 1] Transparent UART Receiver & MAVLink Streamer active on Core 1 (Priority 3).");
 
   QueuePacket cmdPkt;
+  uint8_t uartChunk[MAX_PACKET_LEN];
+  size_t chunkIdx = 0;
+  unsigned long lastChunkTime = millis();
 
   while (true) {
     // 1. Drain incoming UART bytes from Pixhawk TELEM2 hardware buffer
-    while (PixhawkSerial.available() > 0) {
+    while (PixhawkSerial.available() > 0 && chunkIdx < sizeof(uartChunk)) {
       uint8_t b = (uint8_t)PixhawkSerial.read();
-      processIncomingUartByte(b);
+      totalRxBytesFromPixhawk++;
+
+      // Lock baud on detection of first MAVLink v1 (0xFE) or v2 (0xFD) packet header
+      if ((b == 0xFE || b == 0xFD) && !isBaudLocked) {
+        isBaudLocked = true;
+        Serial.printf("\n🎯 [TELEM2 LOCKED] Valid MAVLink framing (0x%02X) confirmed at %lu baud!\n", b, (unsigned long)activePixhawkBaud);
+      }
+
+      // Non-blocking background QR code inspector
+      processQrInspectionByte(b);
+
+      uartChunk[chunkIdx++] = b;
+    }
+
+    // Flush chunk to cloud transmission queue if buffer reaches 128 bytes or 10ms passed
+    if (chunkIdx > 0 && (chunkIdx >= 128 || (millis() - lastChunkTime >= 10))) {
+      if (qTxToCloud != nullptr) {
+        QueuePacket pkt;
+        pkt.type = PKT_TYPE_MAVLINK_BINARY;
+        pkt.length = chunkIdx;
+        memcpy(pkt.data, uartChunk, chunkIdx);
+        xQueueSend(qTxToCloud, &pkt, 0); // Drop if queue full to prevent stall
+      }
+      chunkIdx = 0;
+      lastChunkTime = millis();
     }
 
     // 2. Transmit queued GCS commands from Cloud -> Pixhawk TELEM2
@@ -879,16 +799,14 @@ void setup() {
 // MAIN ARDUINO LOOP (DIAGNOSTIC MONITOR & AUTO-BAUD DETECTOR)
 // =====================================================================================
 void loop() {
-  // Auto-baud switcher: ONLY if not locked AND zero bytes received after 12s
-  if (!isBaudLocked && totalRxBytesFromPixhawk == 0 && (millis() - lastBaudSwitchTime > 12000)) {
+  // Auto-baud switcher: ONLY if not locked AND zero bytes received after 10s
+  if (!isBaudLocked && totalRxBytesFromPixhawk == 0 && (millis() - lastBaudSwitchTime > 10000)) {
     lastBaudSwitchTime = millis();
-    currentBaudIdx = (currentBaudIdx + 1) % 2;
+    currentBaudIdx = (currentBaudIdx + 1) % NUM_TELEM2_BAUDS;
     activePixhawkBaud = TELEM2_BAUDS[currentBaudIdx];
     
-    // Reconfigure hardware UART buffers and baud rate
-    PixhawkSerial.setRxBufferSize(PIXHAWK_RX_BUF);
-    PixhawkSerial.setTxBufferSize(PIXHAWK_TX_BUF);
-    PixhawkSerial.begin(activePixhawkBaud, SERIAL_8N1, PIXHAWK_RX_PIN, PIXHAWK_TX_PIN);
+    // Thread-safe update of hardware UART baud divider
+    PixhawkSerial.updateBaudRate(activePixhawkBaud);
     Serial.printf("🔄 [TELEM2 AUTO-BAUD] Testing %lu baud on TELEM2...\n", (unsigned long)activePixhawkBaud);
   }
 
