@@ -73,6 +73,10 @@ if (!fs.existsSync(DATA_DIR)) {
 
 const MISSIONS_FILE = path.join(DATA_DIR, 'missions.json');
 const DETECTIONS_FILE = path.join(DATA_DIR, 'detections.json');
+const HEATMAP_FILE = path.join(DATA_DIR, 'heatmap.json');
+const OBJECTS_FILE = path.join(DATA_DIR, 'objects.json');
+let latestHeatmapData = loadJsonSafe(HEATMAP_FILE, null);
+let objectRegistry = loadJsonSafe(OBJECTS_FILE, []);
 
 function loadJsonSafe(filePath, fallback) {
   try {
@@ -280,6 +284,214 @@ const server = http.createServer((req, res) => {
       'Access-Control-Allow-Origin': '*'
     });
     res.end(JSON.stringify({ success: true, message: 'Detections cleared' }));
+    return;
+  }
+
+  // AERORECON: Ingest Real-Time Heatmap Grid
+  if (parsedUrl.pathname === '/api/vision/heatmap' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const heatmap = JSON.parse(body || '{}');
+        latestHeatmapData = { ...heatmap, serverTimestamp: Date.now() };
+        saveJsonAtomic(HEATMAP_FILE, latestHeatmapData);
+        
+        const broadcastMsg = JSON.stringify({
+          type: 'HEATMAP_UPDATE_EVENT',
+          heatmap: latestHeatmapData
+        });
+        for (const browser of browserSockets) {
+          if (browser.readyState === WebSocket.OPEN) {
+            try { browser.send(broadcastMsg, noop); } catch (e) {}
+          }
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: true, timestamp: latestHeatmapData.serverTimestamp }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: 'Invalid heatmap JSON payload' }));
+      }
+    });
+    return;
+  }
+
+  // AERORECON: Query Latest Heatmap Grid
+  if (parsedUrl.pathname === '/api/vision/heatmap' && req.method === 'GET') {
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-cache, no-store'
+    });
+    res.end(JSON.stringify({
+      success: true,
+      heatmap: latestHeatmapData
+    }));
+    return;
+  }
+
+  // AERORECON: Ingest or Update Object Detection Registry
+  if (parsedUrl.pathname === '/api/vision/objects' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const objectsList = Array.isArray(payload) ? payload : (payload.objects || [payload]);
+        
+        for (const obj of objectsList) {
+          if (!obj.object_id && !obj.objectId) continue;
+          const id = obj.object_id || obj.objectId;
+          const existingIdx = objectRegistry.findIndex(o => (o.object_id || o.objectId) === id);
+          if (existingIdx !== -1) {
+            objectRegistry[existingIdx] = { ...objectRegistry[existingIdx], ...obj, last_updated: Date.now() };
+          } else {
+            objectRegistry.push({ ...obj, registered_at: Date.now() });
+          }
+        }
+        
+        saveJsonAtomic(OBJECTS_FILE, objectRegistry);
+
+        const broadcastMsg = JSON.stringify({
+          type: 'OBJECT_QUEUE_UPDATE',
+          objects: objectRegistry,
+          timestamp: Date.now()
+        });
+        for (const browser of browserSockets) {
+          if (browser.readyState === WebSocket.OPEN) {
+            try { browser.send(broadcastMsg, noop); } catch (e) {}
+          }
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: true, count: objectRegistry.length }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: 'Invalid object JSON payload' }));
+      }
+    });
+    return;
+  }
+
+  // AERORECON: Query Object Detection Registry
+  if (parsedUrl.pathname === '/api/vision/objects' && req.method === 'GET') {
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-cache, no-store'
+    });
+    res.end(JSON.stringify({
+      success: true,
+      count: objectRegistry.length,
+      objects: objectRegistry
+    }));
+    return;
+  }
+
+  // AERORECON: Plan Spiral Route & Calculate 5-Minute Feasibility
+  if (parsedUrl.pathname === '/api/vision/plan-spiral' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const params = JSON.parse(body || '{}');
+        const boundaryType = params.boundaryType || 'RECTANGLE';
+        const altitude = Math.max(2, Math.min(50, Number(params.altitude) || 5));
+        const speed = Math.max(1, Math.min(10, Number(params.speed) || 4));
+        const center = params.center || { lat: 13.0827, lng: 80.2707 };
+        const width = Number(params.width) || 30;
+        const height = Number(params.height) || 20;
+        const radius = Number(params.radius) || 15;
+
+        const gw = 2.0 * altitude * Math.tan((68.0 * Math.PI / 180.0) / 2.0);
+        const gh = 2.0 * altitude * Math.tan((54.0 * Math.PI / 180.0) / 2.0);
+        const laneSpacing = Math.max(2.5, gw * 0.75);
+
+        const waypoints = [];
+        if (boundaryType === 'CIRCLE') {
+          const b = laneSpacing / (2.0 * Math.PI);
+          const maxTheta = radius / b;
+          const thetaStep = Math.PI / 6.0;
+          let curTheta = Math.PI / 4.0;
+          let wpIdx = 1;
+
+          while (curTheta <= maxTheta + 0.1) {
+            const r = Math.min(radius, b * curTheta);
+            const dx = r * Math.cos(curTheta);
+            const dy = r * Math.sin(curTheta);
+            const dLat = (dy / 6378137.0) * (180.0 / Math.PI);
+            const dLon = (dx / (6378137.0 * Math.cos(center.lat * Math.PI / 180.0))) * (180.0 / Math.PI);
+            waypoints.push({
+              index: wpIdx++,
+              lat: Number((center.lat + dLat).toFixed(7)),
+              lng: Number((center.lng + dLon).toFixed(7)),
+              altitude,
+              speed,
+              action: 'SCAN_PASS',
+              name: 'Spiral Loop ' + Math.ceil(wpIdx / 12)
+            });
+            curTheta += thetaStep;
+          }
+        } else {
+          const aspect = height / Math.max(1, width);
+          let curW = Math.min(width, laneSpacing);
+          let curH = Math.min(height, laneSpacing * aspect);
+          let wpIdx = 1;
+
+          while (curW <= width || curH <= height) {
+            const hw = Math.min(width, curW) / 2.0;
+            const hh = Math.min(height, curH) / 2.0;
+            const corners = [[-hw, -hh], [-hw, hh], [hw, hh], [hw, -hh]];
+
+            for (const [dx, dy] of corners) {
+              const dLat = (dy / 6378137.0) * (180.0 / Math.PI);
+              const dLon = (dx / (6378137.0 * Math.cos(center.lat * Math.PI / 180.0))) * (180.0 / Math.PI);
+              waypoints.push({
+                index: wpIdx++,
+                lat: Number((center.lat + dLat).toFixed(7)),
+                lng: Number((center.lng + dLon).toFixed(7)),
+                altitude,
+                speed,
+                action: 'SCAN_PASS',
+                name: 'Rect Sweep ' + wpIdx
+              });
+            }
+            curW += laneSpacing;
+            curH += laneSpacing * aspect;
+          }
+        }
+
+        waypoints.push({
+          index: waypoints.length + 1,
+          lat: center.lat,
+          lng: center.lng,
+          altitude,
+          speed,
+          action: 'RTL',
+          name: 'Return To Launch (RTL)'
+        });
+
+        const totalDuration = (waypoints.length * 4.0) + (altitude / 1.5) + 30.0;
+        const isFeasible = totalDuration <= 300.0;
+
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          success: true,
+          boundaryType,
+          laneSpacing: Number(laneSpacing.toFixed(2)),
+          footprint: { width: Number(gw.toFixed(2)), height: Number(gh.toFixed(2)) },
+          waypointsCount: waypoints.length,
+          estimatedDurationSeconds: Number(totalDuration.toFixed(1)),
+          isFeasible5Min: isFeasible,
+          feasibilityNotes: isFeasible
+            ? 'Mission estimated at ' + Math.round(totalDuration) + 's, within 300s envelope.'
+            : 'Mission estimated at ' + Math.round(totalDuration) + 's exceeds 300s. Suggest increasing altitude or reducing boundary.',
+          waypoints
+        }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
     return;
   }
 

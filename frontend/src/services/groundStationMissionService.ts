@@ -706,11 +706,12 @@ export class GroundStationMissionService {
   public generateAutonomousSearchMission(
     center: LatLngPoint,
     radiusMeters: number = 10,
-    algorithm: 'TANGENTIAL_CIRCULAR' | 'SPIRAL' = 'TANGENTIAL_CIRCULAR',
-    homePoint: HomePoint,
+    algorithm: 'TANGENTIAL_CIRCULAR' | 'SPIRAL' | 'RECTANGULAR_SPIRAL' | 'SQUARE_SPIRAL' = 'SPIRAL',
+    homePoint: HomePoint = { latitude: 0, longitude: 0, altitude: 0, timestamp: 0, isSet: false },
     altitude: number = 5,
-    timeLimitMinutes: number = 10,
-    speed: number = 4.0
+    timeLimitMinutes: number = 5,
+    speed: number = 4.0,
+    boundaryDimensions?: { width: number; height: number }
   ): {
     mission: GroundStationMission;
     searchDuration: number;
@@ -723,8 +724,8 @@ export class GroundStationMissionService {
     const validRadius = Math.max(5, Math.min(500, radiusMeters || 10));
     const validSpeed = Math.max(1, Math.min(10, speed || 4.0));
 
-    const homeLat = homePoint.isSet ? homePoint.latitude : center.lat;
-    const homeLon = homePoint.isSet ? homePoint.longitude : center.lng;
+    const homeLat = homePoint && homePoint.isSet ? homePoint.latitude : center.lat;
+    const homeLon = homePoint && homePoint.isSet ? homePoint.longitude : center.lng;
 
     const waypoints: GroundStationWaypoint[] = [];
     const boundaryCoords: LatLngPoint[] = [];
@@ -732,17 +733,87 @@ export class GroundStationMissionService {
     let prevLat = homeLat;
     let prevLng = homeLon;
 
-    // Build outer radius boundary polygon for map visual
-    const boundaryPoints = 32;
-    for (let b = 0; b <= boundaryPoints; b++) {
-      const bAngle = (360 / boundaryPoints) * b;
-      boundaryCoords.push(computeDestination(center.lat, center.lng, validRadius, bAngle));
-    }
+    // Calculate adaptive lane spacing from camera horizontal FOV (68 deg) and 25% overlap
+    const gw = 2.0 * validAlt * Math.tan((68.0 * Math.PI / 180.0) / 2.0);
+    const laneSpacing = Math.max(2.5, gw * 0.75);
 
-    if (algorithm === 'TANGENTIAL_CIRCULAR') {
-      // Algorithm A: Tangential / Circular Search
-      // Entry angle calculated relative to home coordinate
-      const homeBearing = homePoint.isSet
+    let boundaryArea = 0;
+    const isRectOrSquare = algorithm === 'RECTANGULAR_SPIRAL' || algorithm === 'SQUARE_SPIRAL';
+    const widthMeters = boundaryDimensions?.width || (algorithm === 'SQUARE_SPIRAL' ? validRadius * 2 : validRadius * 2.4);
+    const heightMeters = boundaryDimensions?.height || (algorithm === 'SQUARE_SPIRAL' ? validRadius * 2 : validRadius * 1.6);
+
+    if (isRectOrSquare) {
+      boundaryArea = widthMeters * heightMeters;
+      const hw = widthMeters / 2.0;
+      const hh = heightMeters / 2.0;
+      const rEarth = 6378137.0;
+      const dLatHalf = (hh / rEarth) * (180.0 / Math.PI);
+      const dLonHalf = (hw / (rEarth * Math.cos(center.lat * Math.PI / 180.0))) * (180.0 / Math.PI);
+
+      boundaryCoords.push(
+        { lat: center.lat - dLatHalf, lng: center.lng - dLonHalf },
+        { lat: center.lat + dLatHalf, lng: center.lng - dLonHalf },
+        { lat: center.lat + dLatHalf, lng: center.lng + dLonHalf },
+        { lat: center.lat - dLatHalf, lng: center.lng + dLonHalf },
+        { lat: center.lat - dLatHalf, lng: center.lng - dLonHalf }
+      );
+
+      const effW = Math.max(4.0, widthMeters - 4.0);
+      const effH = Math.max(4.0, heightMeters - 4.0);
+      const aspect = effH / Math.max(1.0, effW);
+
+      let curW = Math.min(effW, laneSpacing);
+      let curH = Math.min(effH, laneSpacing * aspect);
+      let k = 1;
+
+      while (curW <= effW || curH <= effH) {
+        const curHw = Math.min(effW, curW) / 2.0;
+        const curHh = Math.min(effH, curH) / 2.0;
+
+        const loopCorners: [number, number][] = [
+          [-curHw, -curHh],
+          [-curHw, curHh],
+          [curHw, curHh],
+          [curHw, -curHh]
+        ];
+
+        for (const [dx, dy] of loopCorners) {
+          const dLat = (dy / rEarth) * (180.0 / Math.PI);
+          const dLon = (dx / (rEarth * Math.cos(center.lat * Math.PI / 180.0))) * (180.0 / Math.PI);
+          const wpPos = { lat: center.lat + dLat, lng: center.lng + dLon };
+
+          const legDist = calculateHaversineDistance(prevLat, prevLng, wpPos.lat, wpPos.lng);
+          cumulativeDistance += legDist;
+
+          waypoints.push({
+            id: 'RECT_SPRL_' + k,
+            index: k,
+            lat: Number(wpPos.lat.toFixed(7)),
+            lng: Number(wpPos.lng.toFixed(7)),
+            altitude: validAlt,
+            speed: validSpeed,
+            action: 'NAVIGATE',
+            name: 'Rect Sweep Pt ' + k,
+            distanceFromPreviousMeters: Math.round(legDist * 10) / 10
+          });
+
+          prevLat = wpPos.lat;
+          prevLng = wpPos.lng;
+          k++;
+        }
+
+        curW += laneSpacing;
+        curH += laneSpacing * aspect;
+      }
+    } else if (algorithm === 'TANGENTIAL_CIRCULAR') {
+      boundaryArea = Math.PI * validRadius * validRadius;
+      const boundaryPoints = 32;
+      for (let b = 0; b <= boundaryPoints; b++) {
+        const bAngle = (360 / boundaryPoints) * b;
+        boundaryCoords.push(computeDestination(center.lat, center.lng, validRadius, bAngle));
+      }
+
+      const homeBearing = homePoint && homePoint.isSet
         ? calculateBearing(homeLat, homeLon, center.lat, center.lng)
         : 0;
 
@@ -758,93 +829,101 @@ export class GroundStationMissionService {
         cumulativeDistance += legDist;
 
         waypoints.push({
-          id: `TANG_WP_${i + 1}`,
+          id: 'TANG_WP_' + (i + 1),
           index: i + 1,
-          lat: wpPos.lat,
-          lng: wpPos.lng,
+          lat: Number(wpPos.lat.toFixed(7)),
+          lng: Number(wpPos.lng.toFixed(7)),
           altitude: validAlt,
           speed: validSpeed,
           action: 'ORBIT',
-          name: i === 0 ? 'Tangential Entry' : i === numWaypoints ? 'Orbit Final' : `Circle Pt ${i + 1}`,
-          distanceFromPreviousMeters: Math.round(legDist * 10) / 10,
+          name: i === 0 ? 'Tangential Entry' : i === numWaypoints ? 'Orbit Final' : 'Circle Pt ' + (i + 1),
+          distanceFromPreviousMeters: Math.round(legDist * 10) / 10
         });
 
         prevLat = wpPos.lat;
         prevLng = wpPos.lng;
       }
     } else {
-      // Algorithm B: Spiral Search
-      // Archimedean expanding spiral starting near centre and expanding outward to validRadius
-      const radialStep = Math.max(4, Math.min(10, validRadius / 4));
-      const loops = Math.max(1, Math.ceil(validRadius / radialStep));
-      const pointsPerLoop = 8;
-      const totalSpiralPoints = loops * pointsPerLoop;
+      boundaryArea = Math.PI * validRadius * validRadius;
+      const boundaryPoints = 32;
+      for (let b = 0; b <= boundaryPoints; b++) {
+        const bAngle = (360 / boundaryPoints) * b;
+        boundaryCoords.push(computeDestination(center.lat, center.lng, validRadius, bAngle));
+      }
 
-      // Start near center (10% radius or 2m)
-      const startR = Math.min(3, validRadius * 0.2);
+      const effectiveRadius = Math.max(4.0, validRadius - 2.0);
+      const bArchimedes = laneSpacing / (2.0 * Math.PI);
+      const maxTheta = effectiveRadius / bArchimedes;
+      const thetaStep = Math.PI / 6.0;
+      let curTheta = Math.PI / 4.0;
+      let k = 1;
 
-      for (let k = 1; k <= totalSpiralPoints; k++) {
-        const fraction = k / totalSpiralPoints;
-        const curRadius = Math.min(validRadius, startR + fraction * (validRadius - startR));
-        const angle = (k * 45) % 360;
-        const wpPos = computeDestination(center.lat, center.lng, curRadius, angle);
+      while (curTheta <= maxTheta + 0.1) {
+        const r = Math.min(effectiveRadius, bArchimedes * curTheta);
+        const dx = r * Math.sin(curTheta);
+        const dy = r * Math.cos(curTheta);
+
+        const rEarth = 6378137.0;
+        const dLat = (dy / rEarth) * (180.0 / Math.PI);
+        const dLon = (dx / (rEarth * Math.cos(center.lat * Math.PI / 180.0))) * (180.0 / Math.PI);
+        const wpPos = { lat: center.lat + dLat, lng: center.lng + dLon };
 
         const legDist = calculateHaversineDistance(prevLat, prevLng, wpPos.lat, wpPos.lng);
         cumulativeDistance += legDist;
 
         waypoints.push({
-          id: `SPRL_WP_${k}`,
+          id: 'SPRL_WP_' + k,
           index: k,
-          lat: wpPos.lat,
-          lng: wpPos.lng,
+          lat: Number(wpPos.lat.toFixed(7)),
+          lng: Number(wpPos.lng.toFixed(7)),
           altitude: validAlt,
           speed: validSpeed,
           action: 'NAVIGATE',
-          name: k === 1 ? 'Spiral Origin' : k === totalSpiralPoints ? 'Spiral Boundary' : `Spiral Loop ${Math.ceil(k / 8)}`,
-          distanceFromPreviousMeters: Math.round(legDist * 10) / 10,
+          name: k === 1 ? 'Spiral Origin' : 'Spiral Loop ' + Math.ceil(k / 12),
+          distanceFromPreviousMeters: Math.round(legDist * 10) / 10
         });
 
         prevLat = wpPos.lat;
         prevLng = wpPos.lng;
+        curTheta += thetaStep;
+        k++;
       }
     }
 
-    // Always append final Return To Launch (RTL) waypoint
     const rtlDist = calculateHaversineDistance(prevLat, prevLng, homeLat, homeLon);
     cumulativeDistance += rtlDist;
 
     waypoints.push({
       id: 'AUTO_RTL',
       index: waypoints.length + 1,
-      lat: homeLat,
-      lng: homeLon,
+      lat: Number(homeLat.toFixed(7)),
+      lng: Number(homeLon.toFixed(7)),
       altitude: validAlt,
       speed: validSpeed,
       action: 'RTL',
       name: 'Return To Launch (RTL)',
-      distanceFromPreviousMeters: Math.round(rtlDist * 10) / 10,
+      distanceFromPreviousMeters: Math.round(rtlDist * 10) / 10
     });
 
-    // Time calculations
     const searchDuration = Math.round(
       ((cumulativeDistance - rtlDist) / validSpeed) + (waypoints.length * 1.2) + (validAlt / 2.0)
     );
     const returnDuration = Math.round((rtlDist / (validSpeed * 1.2)) + (validAlt / 1.5) + 30);
     const totalDuration = searchDuration + returnDuration;
 
-    const timeLimitSeconds = (timeLimitMinutes || 10) * 60;
-    const isFeasible = timeLimitSeconds >= totalDuration;
+    const timeLimitSeconds = (timeLimitMinutes || 5) * 60;
+    const isFeasible = timeLimitSeconds >= totalDuration && totalDuration <= 360;
     const feasibilityReason = isFeasible
       ? undefined
-      : `Configured mission time limit (${timeLimitMinutes} min / ${timeLimitSeconds}s) is less than required search (${Math.ceil(searchDuration / 60)} min) + return (${Math.ceil(returnDuration / 60)} min) duration of ${Math.ceil(totalDuration / 60)} minutes.`;
+      : 'Estimated flight duration (' + Math.ceil(totalDuration) + 's) exceeds ' + timeLimitMinutes + 'm target. Suggest increasing altitude or reducing boundary.';
 
     const mission: GroundStationMission = {
-      id: `MSN_AUTO_${Date.now().toString(36).toUpperCase()}`,
+      id: 'MSN_AUTO_' + Date.now().toString(36).toUpperCase(),
       homePoint: {
         latitude: homeLat,
         longitude: homeLon,
-        altitude: homePoint.altitude || 0,
-        isSet: homePoint.isSet,
+        altitude: homePoint && homePoint.altitude ? homePoint.altitude : 0,
+        isSet: homePoint ? homePoint.isSet : false
       },
       missionType: 'SEARCH',
       altitude: validAlt,
@@ -853,14 +932,14 @@ export class GroundStationMissionService {
       totalDistance: Math.round(cumulativeDistance * 10) / 10,
       estimatedDuration: totalDuration,
       geometry: {
-        type: 'circle',
+        type: isRectOrSquare ? 'polygon' : 'circle',
         circleCenter: center,
         circleRadiusMeters: validRadius,
-        areaSquareMeters: Math.round(Math.PI * validRadius * validRadius),
-        coordinates: boundaryCoords,
+        areaSquareMeters: Math.round(boundaryArea),
+        coordinates: boundaryCoords
       },
       isUploaded: false,
-      createdAt: Date.now(),
+      createdAt: Date.now()
     };
 
     this.currentMission = mission;
@@ -872,7 +951,7 @@ export class GroundStationMissionService {
       returnDuration,
       totalDuration,
       isFeasible,
-      feasibilityReason,
+      feasibilityReason
     };
   }
 

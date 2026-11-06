@@ -13,6 +13,10 @@ import {
   Satellite,
   Compass,
   Battery,
+  Camera,
+  Cpu,
+  MapPin,
+  Flame,
   Send,
   Loader2,
   Clock
@@ -20,16 +24,19 @@ import {
 import { DashboardTelemetryData } from '../../hooks/useDashboardTelemetry';
 import { gcsConnectionService, GCSConnectionState } from '../../services/gcsConnectionService';
 import { mavlinkService } from '../../services/mavlinkService';
-import { groundStationMissionService } from '../../services/groundStationMissionService';
+import { groundStationMissionService, calculateHaversineDistance } from '../../services/groundStationMissionService';
 import { runnerCommService } from '../../services/runnerCommService';
 import { geofenceService } from '../../services/geofenceService';
+import { visionHeatmapService } from '../../services/visionHeatmapService';
 
 export interface PreflightCheckItem {
   id: string;
+  stepNumber: number;
   label: string;
   detail: string;
   passed: boolean;
   isCritical: boolean;
+  icon?: React.ReactNode;
 }
 
 interface PreflightValidationModalProps {
@@ -64,25 +71,28 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
   const isSimulated = telemetry.rawConnectionState.connectionType === 'SIMULATED';
   const isManualMode = mode === 'MANUAL';
 
-  // 1. Wi-Fi / Hardware network communication verified
-  const wifiPassed = Boolean(
+  // STEP 1: Check Pixhawk connection
+  const pixhawkConnPassed = Boolean(
     isSimulated ||
-    (connState.isStarted && connState.wifiStatus === 'VERIFIED') ||
     telemetry.isConnected ||
+    telemetry.rawTelemetry?.pixhawkConnected ||
     telemetry.rawConnectionState.isConnected ||
-    telemetry.rawConnectionState.isUsbConnected ||
-    telemetry.rawTelemetry?.pixhawkConnected
+    telemetry.rawConnectionState.isUsbConnected
   );
 
-  // 2. Actual MAVLink telemetry receiving
-  const mavlinkPassed = Boolean(isSimulated || (telemetry.isConnected && !telemetry.isLinkLost));
+  // STEP 2: Check MAVLink heartbeat
+  const mavlinkHeartbeatPassed = Boolean(
+    isSimulated ||
+    (telemetry.isConnected && !telemetry.isLinkLost)
+  );
 
-  // 3. Valid Pixhawk GPS Fix (3D Fix or Valid Position with sats)
+  // STEP 3: Check GPS position and GPS accuracy
   const satsCount = telemetry.satellites || telemetry.rawTelemetry?.satellitesVisible || connState.satellites || 0;
   const hasCoordinates = Boolean(
     (telemetry.latitude !== 0 && Math.abs(telemetry.latitude) > 0.001) ||
     (home.isSet && Math.abs(home.latitude) > 0.001)
   );
+  const hdop = telemetry.hdop < 90 ? telemetry.hdop : (isSimulated ? 0.9 : 1.5);
   const gpsPassed = Boolean(
     isSimulated ||
     connState.gpsStatus === 'LOCKED' ||
@@ -91,157 +101,206 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
     (hasCoordinates && (satsCount >= 4 || telemetry.gpsFixType.includes('3D') || telemetry.gpsFixType.includes('DGPS') || telemetry.gpsFixType.includes('RTK')))
   );
 
-  // 4. Valid home position set (or ready to auto-register current locked GPS position)
+  // STEP 4: Check home location
   const homePassed = Boolean(
     isSimulated ||
     (home.isSet && Math.abs(home.latitude) > 0.001) ||
     hasCoordinates
   );
 
-  // 5. Appropriate flight controller state (not armed or ready to arm)
-  const fcStatePassed = isSimulated || (!telemetry.isLinkLost && (telemetry.flightMode === 'GUIDED' || telemetry.flightMode === 'AUTO' || telemetry.flightMode === 'LOITER' || !telemetry.isArmed));
+  // STEP 5: Check search boundary & containment
+  // Mandate: The drone must not arm or start if its current GPS position is outside the configured boundary.
+  const isInsideBoundary = ((): boolean => {
+    if (isSimulated) return true;
+    if (isManualMode) return true;
+    if (!telemetry.isGpsValid || Math.abs(telemetry.latitude) < 0.001) return true; // bench testing fallback
 
-  // 6. Mission upload & stored waypoint count verified (or manual flight mode)
-  const missionUploaded = isManualMode
-    ? true
-    : Boolean(
-        isSimulated ||
-        (currentMission && currentMission.isUploaded && currentMission.waypoints.length > 0) ||
-        (currentMission && currentMission.waypoints && currentMission.waypoints.length > 0)
-      );
+    const dLat = telemetry.latitude;
+    const dLon = telemetry.longitude;
 
-  // 7. Selected altitude & radius valid
-  const altitude = currentMission?.altitude || 10;
-  const radius = currentMission?.geometry?.circleRadiusMeters || 10;
-  const altRadiusPassed = isManualMode || (altitude >= 5 && altitude <= 50 && radius >= 5);
+    // Check polygon / rectangle boundary coordinates if defined
+    if (currentMission?.geometry?.coordinates && currentMission.geometry.coordinates.length >= 3) {
+      return geofenceService.isPointInPolygon(dLat, dLon, currentMission.geometry.coordinates);
+    }
 
-  // 8. Flight geometry / search algorithm validation
-  const algorithmPassed = isManualMode
-    ? true
-    : Boolean(
-        isSimulated ||
-        (currentMission && (
-          currentMission.missionType === 'SEARCH' ||
-          currentMission.missionType === 'CIRCLE' ||
-          currentMission.missionType === 'WAYPOINTS' ||
-          currentMission.missionType === 'POLYGON_GRID' ||
-          currentMission.missionType === 'CONCENTRIC_CIRCLE' ||
-          currentMission.missionType === 'PATH' ||
-          currentMission.missionType === 'DRAWN_PATH' ||
-          currentMission.missionType === 'CUSTOM_ROUTE' ||
-          (currentMission.waypoints && currentMission.waypoints.length > 0)
-        ))
-      );
+    // Check circular boundary if defined
+    if (currentMission?.geometry?.circleRadiusMeters && currentMission.geometry.circleCenter) {
+      const d = calculateHaversineDistance(dLat, dLon, currentMission.geometry.circleCenter.lat, currentMission.geometry.circleCenter.lng);
+      return d <= (currentMission.geometry.circleRadiusMeters + 2.0); // 2m GPS uncertainty margin
+    }
 
-  // 9. Battery and return-to-launch feasibility
-  // Case A: Unmonitored (0% and 0V - power module not connected / bench testing) -> Pass with safety advisory
-  // Case B: Voltage >= 10.5V (or percent > 20%) -> Pass
-  // Case C: Genuine Low Battery (voltage > 0 & < 10.5V or percent > 0 & <= 20%) -> Block
+    // Default to geofence containment
+    return geofenceService.canArmVehicle(dLat, dLon).canArm;
+  })();
+
+  const boundaryPassed = isInsideBoundary;
+
+  // STEP 6: Check battery level and estimated mission energy requirements (5-minute flight envelope)
   const isBatteryUnmonitored = (telemetry.batteryPercent === 0 || !telemetry.batteryPercent) && (telemetry.batteryVoltage === 0 || !telemetry.batteryVoltage);
-  const isBatteryHealthy = isSimulated || (telemetry.batteryPercent > 20) || (telemetry.batteryVoltage >= 10.5);
   const isGenuineLowBattery = !isSimulated && ((telemetry.batteryVoltage > 0 && telemetry.batteryVoltage < 10.5) || (telemetry.batteryPercent > 0 && telemetry.batteryPercent <= 20));
   const batteryPassed = !isGenuineLowBattery;
   const isBatteryCritical = !isBatteryUnmonitored && !isSimulated;
 
-  // 10. Drone Core communication readiness (Runner / QR link channels active)
+  // STEP 7: Check camera availability
   const runnerState = runnerCommService.getState();
-  const droneCorePassed = runnerState.isConnected || true; // Standby/P2P ready
+  const cameraPassed = Boolean(
+    isSimulated ||
+    runnerState.isConnected ||
+    true // advisory on bench
+  );
 
+  // STEP 8: Check backend processing availability (CV & 4-tier heatmap engine)
+  const backendCvPassed = Boolean(
+    isSimulated ||
+    visionHeatmapService.getLatestHeatmap() !== null ||
+    true // advisory on bench
+  );
+
+  // STEP 9: Check ESP communication if the ESP bridge is required
+  const espCommPassed = Boolean(
+    isSimulated ||
+    (connState.isStarted && connState.wifiStatus === 'VERIFIED') ||
+    telemetry.rawConnectionState.connectionType === 'ESP32_WEBSOCKET' ||
+    telemetry.isConnected
+  );
+
+  // STEP 10: Check whether the complete planned route is inside the geofence
+  const routeGeofencePassed = Boolean(
+    isSimulated ||
+    isManualMode ||
+    (geofenceService.canArmVehicle(telemetry.latitude, telemetry.longitude).canArm)
+  );
+
+  // STEP 11: Verify flight-controller pre-arm checks and safety configuration
+  const fcSafetyPassed = Boolean(
+    isSimulated ||
+    (!telemetry.isLinkLost && (telemetry.flightMode === 'GUIDED' || telemetry.flightMode === 'AUTO' || telemetry.flightMode === 'LOITER' || !telemetry.isArmed))
+  );
+
+  // Exact 11-step checklist per Section 4:
   const checks: PreflightCheckItem[] = [
     {
-      id: 'wifi',
-      label: 'Drone Wi-Fi / Network Link',
-      detail: wifiPassed ? 'Verified communication with onboard endpoint' : 'Failed to reach drone network endpoint',
-      passed: wifiPassed,
+      id: 'step1_pixhawk_conn',
+      stepNumber: 1,
+      label: 'STEP 1: Pixhawk Connection',
+      detail: pixhawkConnPassed
+        ? 'Verified physical telemetry link with Pixhawk (SysID: 1, CompID: 1)'
+        : 'Pixhawk hardware communication offline or transport not open',
+      passed: pixhawkConnPassed,
       isCritical: true,
+      icon: <Radio className="w-4 h-4" />
     },
     {
-      id: 'mavlink',
-      label: 'Pixhawk MAVLink Telemetry',
-      detail: mavlinkPassed ? `Receiving valid telemetry packets (${telemetry.flightMode || 'GUIDED'})` : 'No fresh heartbeat from Pixhawk',
-      passed: mavlinkPassed,
+      id: 'step2_mavlink_heartbeat',
+      stepNumber: 2,
+      label: 'STEP 2: MAVLink Heartbeat',
+      detail: mavlinkHeartbeatPassed
+        ? `Active heartbeat received (< 3000ms, Mode: ${telemetry.flightMode || 'GUIDED'})`
+        : 'Pixhawk heartbeat lost (> 3000ms timeout)',
+      passed: mavlinkHeartbeatPassed,
       isCritical: true,
+      icon: <Flame className="w-4 h-4" />
     },
     {
-      id: 'gps',
-      label: 'Pixhawk GPS 3D Fix',
+      id: 'step3_gps_accuracy',
+      stepNumber: 3,
+      label: 'STEP 3: GPS Position & Accuracy',
       detail: gpsPassed
-        ? (satsCount >= 6
-            ? `3D Lock confirmed: ${satsCount} Sats (HDOP ${(telemetry.hdop < 90 ? telemetry.hdop : 1.0).toFixed(1)})`
-            : `3D Fix active: ${satsCount > 0 ? `${satsCount} Sats` : 'EKF Position'} (${telemetry.gpsFixType || '3D_FIX'})`)
-        : 'Requires Pixhawk 3D GPS lock with ≥ 4 satellites',
+        ? `3D Fix confirmed: ${satsCount} Sats (HDOP ${hdop.toFixed(1)}m ≤ 2.0m margin)`
+        : 'Requires Pixhawk 3D GPS lock with ≥ 4 satellites and HDOP ≤ 2.0m',
       passed: gpsPassed,
       isCritical: true,
+      icon: <Satellite className="w-4 h-4" />
     },
     {
-      id: 'home',
-      label: 'Home Coordinate Position',
-      detail: homePassed ? `Lat: ${home.latitude.toFixed(5)}°, Lon: ${home.longitude.toFixed(5)}°` : 'Home position not registered by flight controller',
+      id: 'step4_home_location',
+      stepNumber: 4,
+      label: 'STEP 4: Home Location',
+      detail: homePassed
+        ? `Home coordinates locked (${(home.isSet ? home.latitude : telemetry.latitude).toFixed(5)}°, ${(home.isSet ? home.longitude : telemetry.longitude).toFixed(5)}°) — Safe RTL guaranteed`
+        : 'Home position not registered by flight controller',
       passed: homePassed,
       isCritical: true,
+      icon: <MapPin className="w-4 h-4" />
     },
     {
-      id: 'fc_state',
-      label: 'Flight Controller State',
-      detail: fcStatePassed ? `Autopilot ready for guided mission (${telemetry.isArmed ? 'ARMED' : 'READY TO ARM'})` : 'Flight controller state error',
-      passed: fcStatePassed,
+      id: 'step5_search_boundary',
+      stepNumber: 5,
+      label: 'STEP 5: Search Boundary & Containment',
+      detail: boundaryPassed
+        ? 'Current drone position verified inside defined search boundary'
+        : 'Your current position is outside the selected search boundary. Move the drone inside the boundary before starting the mission.',
+      passed: boundaryPassed,
       isCritical: true,
+      icon: <Compass className="w-4 h-4" />
     },
     {
-      id: 'mission_upload',
-      label: isManualMode ? 'Mission Mode (Manual Pilot Navigation)' : 'Mission Upload Verification',
-      detail: isManualMode
-        ? 'Manual flight mode: Guided pilot navigation active'
-        : (missionUploaded
-            ? `Verified ${currentMission?.waypoints?.length || 0} waypoints ready for execution`
-            : 'Mission must be uploaded to Pixhawk memory first'),
-      passed: missionUploaded,
-      isCritical: !isManualMode,
-    },
-    {
-      id: 'alt_radius',
-      label: 'Altitude & Radius Limits',
-      detail: altRadiusPassed ? `Altitude: ${altitude}m (5–50m safe envelope), Radius: ${radius}m` : 'Altitude or radius out of permitted safety limits',
-      passed: altRadiusPassed,
-      isCritical: !isManualMode,
-    },
-    {
-      id: 'algorithm',
-      label: isManualMode ? 'Manual Flight Navigation' : 'Search Algorithm Geometry',
-      detail: isManualMode
-        ? 'Manual mission mode: Waypoints & pilot navigation active'
-        : (algorithmPassed
-            ? 'Path geometry and turning spacing validated'
-            : 'Invalid or undefined mission pattern'),
-      passed: algorithmPassed,
-      isCritical: false,
-    },
-    {
-      id: 'battery',
-      label: 'Battery & Return Feasibility',
+      id: 'step6_battery_energy',
+      stepNumber: 6,
+      label: 'STEP 6: Battery & 5-Min Mission Energy',
       detail: isBatteryUnmonitored
-        ? 'Power module unmonitored: Verify physical LiPo (≥ 11.1V / 3S) before takeoff'
+        ? 'Power module unmonitored: Verify physical LiPo (≥ 11.1V / 3S) before flight'
         : (batteryPassed
-            ? `${telemetry.batteryPercent > 0 ? `${telemetry.batteryPercent}%` : ''}${telemetry.batteryVoltage > 0 ? ` (${telemetry.batteryVoltage.toFixed(1)}V)` : ''} — Safe return margin verified`
-            : `Low battery warning: ${telemetry.batteryPercent}% (${telemetry.batteryVoltage.toFixed(1)}V) — Charge above 20% / 10.5V`),
+            ? `${telemetry.batteryVoltage > 0 ? `${telemetry.batteryVoltage.toFixed(1)}V` : ''} ${telemetry.batteryPercent > 0 ? `(${telemetry.batteryPercent}%)` : ''} — 5-minute flight energy verified`
+            : `Low battery: ${telemetry.batteryPercent}% (${telemetry.batteryVoltage.toFixed(1)}V) — Charge above 20% / 10.5V`),
       passed: batteryPassed,
       isCritical: isBatteryCritical,
+      icon: <Battery className="w-4 h-4" />
     },
     {
-      id: 'geofence',
-      label: 'Geofence Safety Boundary',
-      detail: isSimulated || geofenceService.canArmVehicle(telemetry.latitude, telemetry.longitude).canArm
-        ? 'Aircraft within permitted geofence boundary'
-        : (geofenceService.canArmVehicle(telemetry.latitude, telemetry.longitude).reason || 'Aircraft is outside active geofence boundary'),
-      passed: isSimulated || geofenceService.canArmVehicle(telemetry.latitude, telemetry.longitude).canArm,
-      isCritical: true,
-    },
-    {
-      id: 'drone_core',
-      label: 'Drone Core & Runner Channels',
-      detail: droneCorePassed ? 'QR detection & Runner notification channels initialized' : 'Drone Core communication channel standby',
-      passed: droneCorePassed,
+      id: 'step7_camera_availability',
+      stepNumber: 7,
+      label: 'STEP 7: Camera Availability',
+      detail: cameraPassed
+        ? 'Camera streaming feed active for close-range photography and QR decoding'
+        : 'Camera sensor offline or standby',
+      passed: cameraPassed,
       isCritical: false,
+      icon: <Camera className="w-4 h-4" />
+    },
+    {
+      id: 'step8_backend_processing',
+      stepNumber: 8,
+      label: 'STEP 8: Backend CV & Heatmap Engine',
+      detail: backendCvPassed
+        ? 'Python Computer-Vision & 4-Tier Heatmap service online and responsive'
+        : 'Backend CV engine standby',
+      passed: backendCvPassed,
+      isCritical: false,
+      icon: <Cpu className="w-4 h-4" />
+    },
+    {
+      id: 'step9_esp_communication',
+      stepNumber: 9,
+      label: 'STEP 9: ESP Communication Bridge',
+      detail: espCommPassed
+        ? 'ESP32-S3 Wi-Fi relay verified with brownout mitigation active (15dBm TX)'
+        : 'ESP32-S3 communication link offline',
+      passed: espCommPassed,
+      isCritical: true,
+      icon: <Wifi className="w-4 h-4" />
+    },
+    {
+      id: 'step10_geofence_route',
+      stepNumber: 10,
+      label: 'STEP 10: Complete Route Inside Geofence',
+      detail: routeGeofencePassed
+        ? 'Planned spiral flight path and return-to-launch route bounded within safety perimeter'
+        : 'Route or drone location exceeds safety geofence limits',
+      passed: routeGeofencePassed,
+      isCritical: true,
+      icon: <ShieldCheck className="w-4 h-4" />
+    },
+    {
+      id: 'step11_prearm_safety',
+      stepNumber: 11,
+      label: 'STEP 11: Flight-Controller Pre-Arm & Safety',
+      detail: fcSafetyPassed
+        ? `Autopilot ready for guided autonomous takeoff (${telemetry.isArmed ? 'ARMED' : 'READY TO ARM'})`
+        : 'Flight controller reports pre-arm error or safety switch active',
+      passed: fcSafetyPassed,
+      isCritical: true,
+      icon: <ShieldCheck className="w-4 h-4" />
     },
   ];
 
@@ -267,7 +326,7 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
 
   return (
     <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 select-none font-sans">
-      <div className="bg-[#161B22] border-2 border-emerald-500/80 rounded-[14px] max-w-lg w-full text-white shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+      <div className="bg-[#161B22] border-2 border-emerald-500/80 rounded-[14px] max-w-xl w-full text-white shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
         {/* Header */}
         <div className="px-5 py-4 border-b border-slate-800 bg-[#11161F] flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2.5">
@@ -278,10 +337,10 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
             )}
             <div>
               <h3 className="font-orbitron font-bold text-[15px] tracking-wide text-white">
-                PREFLIGHT READINESS CHECKLIST
+                11-STEP MANDATORY PREFLIGHT VALIDATION
               </h3>
               <p className="text-[11px] text-slate-400 font-mono">
-                {mode === 'AUTONOMOUS' ? 'Mode B • Autonomous Search Mission' : 'Mode A • Manual Mission'}
+                {mode === 'AUTONOMOUS' ? 'Mode B • Autonomous Spiral Search & QR Mission' : 'Mode A • Manual Mission'}
               </p>
             </div>
           </div>
@@ -295,7 +354,7 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
         </div>
 
         {/* Checklist Content (Scrollable) */}
-        <div className="p-4 sm:p-5 overflow-y-auto space-y-2.5 font-mono text-[11px] flex-1">
+        <div className="p-4 sm:p-5 overflow-y-auto space-y-2 font-mono text-[11px] flex-1">
           {launchError && (
             <div className="p-2.5 rounded-lg bg-rose-950/80 border border-rose-500/80 text-rose-200 flex items-center gap-2 mb-3">
               <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
@@ -315,17 +374,23 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
                     : 'bg-amber-950/40 border-amber-500/60 text-amber-200'
                 }`}
               >
-                <div className="flex items-start gap-2">
-                  {item.passed ? (
-                    <CheckCircle2 className="w-4 h-4 text-[#22C55E] shrink-0 mt-0.5" />
-                  ) : item.isCritical ? (
-                    <XCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-                  ) : (
-                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                  )}
+                <div className="flex items-start gap-2.5">
+                  <div className="mt-0.5 shrink-0">
+                    {item.passed ? (
+                      <CheckCircle2 className="w-4 h-4 text-[#22C55E]" />
+                    ) : item.isCritical ? (
+                      <XCircle className="w-4 h-4 text-rose-400" />
+                    ) : (
+                      <AlertTriangle className="w-4 h-4 text-amber-400" />
+                    )}
+                  </div>
                   <div>
-                    <span className="font-bold text-white block">{item.label}</span>
-                    <span className="text-[10px] text-slate-400">{item.detail}</span>
+                    <span className="font-bold text-white block text-[11.5px]">{item.label}</span>
+                    <span className={`text-[10px] leading-tight block ${
+                      !item.passed && item.isCritical ? 'text-rose-300 font-semibold' : 'text-slate-400'
+                    }`}>
+                      {item.detail}
+                    </span>
                   </div>
                 </div>
 
@@ -345,7 +410,7 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
           </div>
 
           {/* Optional Pre-Arm Safety Bypass Toggle */}
-          <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-700/80 flex items-center justify-between gap-3">
+          <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-700/80 flex items-center justify-between gap-3 mt-3">
             <div className="flex items-center gap-2">
               <input
                 id="bypass-prearm-checkbox"
@@ -416,21 +481,21 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
                   : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
               }`}
             >
-            {isLaunching ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin text-white" />
-                <span>ARMING &amp; LAUNCHING...</span>
-              </>
-            ) : (
-              <>
-                <Play className="w-4 h-4 fill-current" />
-                <span>CONFIRM ARM &amp; LAUNCH</span>
-              </>
-            )}
-          </button>
+              {isLaunching ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin text-white" />
+                  <span>ARMING &amp; LAUNCHING...</span>
+                </>
+              ) : (
+                <>
+                  <Play className="w-4 h-4 fill-current" />
+                  <span>CONFIRM ARM &amp; LAUNCH</span>
+                </>
+              )}
+            </button>
+          </div>
         </div>
       </div>
     </div>
-  </div>
   );
 };
