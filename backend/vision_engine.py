@@ -708,3 +708,4 @@ if __name__ == "__main__":
         log.info(f" -> Object: {obj['object_id']} | Category: {obj['category']} | Priority: {obj['priority']} | GPS: ({obj['lat']}, {obj['lon']})")
 
     log.info(f"Heatmap dimensions: {heatmap.grid_width}x{heatmap.grid_height}. Sample classification value: {heatmap.classification_grid[12][16]}")
+

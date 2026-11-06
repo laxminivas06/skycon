@@ -52,6 +52,11 @@ class InspectionTask:
     decoded_payload: Optional[str] = None
     two_digit_code: Optional[str] = None
 
+    def mark_decoded(self, payload: str, code: Optional[str] = None):
+        self.decoded_payload = payload
+        self.two_digit_code = code
+        self.status = "DECODED"
+
 
 class ObjectInspectionManager:
     """
@@ -81,6 +86,37 @@ class ObjectInspectionManager:
 
     def set_mission_start_time(self, start_time: float):
         self.mission_start_time = start_time
+
+    def register_candidate(
+        self,
+        category: str = "GROUND_OBJECT",
+        shape: str = "UNKNOWN",
+        priority: int = 3,
+        confidence: float = 0.5,
+        lat: Optional[float] = None,
+        lon: Optional[float] = None,
+        altitude: float = 5.0,
+        bounding_box: Optional[Any] = None,
+        centroid: Optional[Any] = None,
+        decoded_payload: Optional[str] = None,
+        two_digit_code: Optional[str] = None,
+        current_waypoint_idx: int = 1
+    ) -> str:
+        """Convenience wrapper for ingest_detection."""
+        raw = {
+            "category": category,
+            "shape": shape,
+            "priority": priority,
+            "confidence": confidence,
+            "lat": lat,
+            "lon": lon,
+            "altitude": altitude,
+            "bounding_box": bounding_box,
+            "centroid": centroid,
+            "decoded_payload": decoded_payload,
+            "two_digit_code": two_digit_code
+        }
+        return self.ingest_detection(raw, current_waypoint_idx=current_waypoint_idx)
 
     # ---------------------------------------------------------------------------------
     # Ingest Detection Events from Vision Engine
@@ -252,6 +288,10 @@ class ObjectInspectionManager:
             "priority_queue": [asdict(t) for t in self.task_queue]
         }
 
+    def get_active_objects(self) -> List[Dict[str, Any]]:
+        """Returns list of all active registered objects for GCS telemetry."""
+        return list(self.objects.values())
+
     @staticmethod
     def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
         r = 6371000.0
@@ -260,6 +300,11 @@ class ObjectInspectionManager:
         dl = math.radians(lon2 - lon1)
         a = math.sin(dp / 2.0)**2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2.0)**2
         return r * 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+
+
+# Aliases for unified cross-module compatibility
+ObjectManager = ObjectInspectionManager
+PriorityInspectionTask = InspectionTask
 
 
 # =====================================================================================
@@ -311,3 +356,4 @@ if __name__ == "__main__":
     print(f"Total Objects in Registry: {summary['total_objects']}")
     print(f"Completed Tasks: {summary['completed_tasks_count']}")
     print(f"Verified Object: {summary['objects'][0]['object_id']} -> Code: {summary['objects'][0]['two_digit_code']}")
+

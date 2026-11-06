@@ -333,6 +333,10 @@ class SpiralSearchPlanner:
         return coords
 
 
+# Alias for cross-module compatibility
+SpiralPlanner = SpiralSearchPlanner
+
+
 # =====================================================================================
 # STANDALONE VERIFICATION ROUTINE
 # =====================================================================================
@@ -366,3 +370,4 @@ if __name__ == "__main__":
     )
     print("\n=== CIRCULAR SPIRAL PLAN ===")
     print(f"Circular Waypoints: {plan_circ.total_waypoints_count} | Total Time: {plan_circ.total_mission_time_s}s")
+

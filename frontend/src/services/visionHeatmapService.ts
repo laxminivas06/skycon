@@ -74,6 +74,40 @@ class VisionHeatmapService {
         }
       } catch {}
     });
+
+    // Listen to direct MAVLink STATUSTEXT QR Code downlink
+    window.addEventListener('QR_CODE_MAVLINK_EVENT', (event: any) => {
+      try {
+        const detail = event.detail;
+        if (detail && detail.code) {
+          try { audioService.playQrSuccess(); } catch {}
+          const existing = this.objectQueue.find(o => o.two_digit_code === detail.code || o.decoded_payload === detail.text);
+          if (existing) {
+            existing.status = 'VERIFIED';
+            existing.priority = 1;
+            existing.decoded_payload = detail.text;
+            existing.two_digit_code = detail.code;
+          } else {
+            this.objectQueue.unshift({
+              object_id: `MAV_${detail.code}`,
+              category: 'QR_CANDIDATE',
+              shape: 'QR_PATTERN',
+              priority: 1,
+              confidence: 1.0,
+              lat: detail.lat,
+              lon: detail.lon,
+              first_seen: detail.timestamp || Date.now(),
+              last_seen: detail.timestamp || Date.now(),
+              hits: 5,
+              status: 'VERIFIED',
+              decoded_payload: detail.text,
+              two_digit_code: detail.code
+            });
+          }
+          this.notifyObjects();
+        }
+      } catch {}
+    });
   }
 
   private startPolling() {

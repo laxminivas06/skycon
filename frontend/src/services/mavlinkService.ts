@@ -2235,6 +2235,26 @@ class MAVLinkService {
               }
             }
 
+            // Intercept MAVLink STATUSTEXT QR Code Downlink from Companion Computer / Drone Core
+            if (lower.includes('qr_code:') || lower.includes('qr:')) {
+              const parts = text.split(':');
+              const qrDigits = parts[1]?.trim() || '';
+              if (qrDigits.length > 0) {
+                this.logDiagnostic('MAVLINK', `🎯 [QR DECODED OVER MAVLINK] Target payload: "${text}" ✓`, 'success');
+                if (typeof window !== 'undefined') {
+                  window.dispatchEvent(new CustomEvent('QR_CODE_MAVLINK_EVENT', {
+                    detail: {
+                      code: qrDigits,
+                      text,
+                      timestamp: Date.now(),
+                      lat: this.telemetry.latitude,
+                      lon: this.telemetry.longitude
+                    }
+                  }));
+                }
+              }
+            }
+
             this.logDiagnostic('MAVLINK', `[STATUSTEXT] [${severity}] ${displayMsg}`, severityLevel <= 3 ? 'error' : severityLevel === 4 ? 'warn' : 'info');
             this.addStatusMessage(severity, severityLevel, displayMsg);
             this.notifyConnection();
