@@ -422,7 +422,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       } else {
         const armSuccess = await mavlinkService.sendArmCommand(forceBypass);
         if (armSuccess) {
-          await mavlinkService.setFlightMode('AUTO');
+          await mavlinkService.setFlightMode('GUIDED');
           started = true;
           statusMsg = 'Armed and switched to AUTO mode';
         } else {

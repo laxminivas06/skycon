@@ -45,10 +45,10 @@ if (Test-Path $mergedBin) {
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "`n=================================================================" -ForegroundColor Green
-    Write-Host "✅ FLASHING COMPLETED SUCCESSFULLY!" -ForegroundColor Green
-    Write-Host "🌐 The ESP32 is rebooting and will connect to 'drone123' hotspot." -ForegroundColor Cyan
+    Write-Host "FLASHING COMPLETED SUCCESSFULLY!" -ForegroundColor Green
+    Write-Host "The ESP32 is rebooting and will connect to drone123 hotspot." -ForegroundColor Cyan
     Write-Host "=================================================================" -ForegroundColor Green
 } else {
-    Write-Host "`n❌ Flashing failed. Hold BOOT button on the ESP32 and run again." -ForegroundColor Red
+    Write-Host "`nFlashing failed. Hold BOOT button on the ESP32 and run again." -ForegroundColor Red
 }
 

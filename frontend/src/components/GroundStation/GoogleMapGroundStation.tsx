@@ -100,7 +100,7 @@ export const GoogleMapGroundStation: React.FC<GoogleMapGroundStationProps> = ({
   const [activeMissionType, setActiveMissionType] = useState<MissionType>('WAYPOINTS');
 
   // Mission Parameters
-  const [altitude, setAltitude] = useState<number>(30); // 30m default
+  const [altitude, setAltitude] = useState<number>(5); // 5m default
   const [speed, setSpeed] = useState<number>(5.0); // 5.0 m/s default
   const [gridSpacing, setGridSpacing] = useState<number>(8.0); // for polygon survey
   const [circleRadius, setCircleRadius] = useState<number>(25); // for circle mission
@@ -1696,7 +1696,7 @@ export const GoogleMapGroundStation: React.FC<GoogleMapGroundStationProps> = ({
                       max="100"
                       step="1"
                       value={altitude}
-                      onChange={(e) => setAltitude(parseInt(e.target.value) || 10)}
+                      onChange={(e) => setAltitude(parseInt(e.target.value) || 5)}
                       onWheel={handleAltitudeWheel}
                       className="flex-1 h-2 accent-amber-400 bg-slate-800 rounded-lg cursor-ew-resize"
                       title="Drag slider or scroll mouse wheel to increase/decrease altitude"

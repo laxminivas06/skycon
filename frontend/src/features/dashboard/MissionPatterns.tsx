@@ -96,14 +96,14 @@ export const MissionPatterns: React.FC<MissionPatternsProps> = ({
           computeDestination(center.lat, center.lng, 25, 90),
           computeDestination(center.lat, center.lng, 40, 90),
         ];
-        groundStationMissionService.generateWaypointMission(pts, home, 30, 5.0);
+        groundStationMissionService.generateWaypointMission(pts, home, 5.0, 4.0);
         break;
       }
 
       case 'Circle': {
         // Generate circular orbit mission using active configured radius
         groundStationMissionService.setDrawingTool('circle');
-        groundStationMissionService.generateCircleMission(center, circleRadius, home, 25, 4.0, 'CW');
+        groundStationMissionService.generateCircleMission(center, circleRadius, home, 5.0, 4.0, 'CW');
         break;
       }
 

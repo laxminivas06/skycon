@@ -44,7 +44,7 @@ export const ManualMissionControlCard: React.FC<ManualMissionControlCardProps> =
   const [activeTool, setActiveTool] = useState<MissionDrawingTool>(() =>
     groundStationMissionService.getDrawingTool()
   );
-  const [altitude, setAltitude] = useState<number>(10);
+  const [altitude, setAltitude] = useState<number>(5);
   const [speed, setSpeed] = useState<number>(4.0);
   const [timeLimitMinutes, setTimeLimitMinutes] = useState<number>(10);
   const [isUploading, setIsUploading] = useState<boolean>(false);
@@ -190,7 +190,7 @@ export const ManualMissionControlCard: React.FC<ManualMissionControlCardProps> =
               max={50}
               value={altitude}
               onChange={(e) => {
-                const val = Math.max(5, Math.min(50, Number(e.target.value) || 10));
+                const val = Math.max(2, Math.min(50, Number(e.target.value) || 5));
                 setAltitude(val);
                 groundStationMissionService.updateMissionAltitude(val);
               }}

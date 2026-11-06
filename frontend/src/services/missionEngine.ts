@@ -25,7 +25,7 @@ const CONFIG_DURATION_KEY = 'SAE_CONFIGURED_MISSION_DURATION';
 const CONFIG_AUTONOMOUS_KEY = 'SAE_AUTONOMOUS_MISSION_CONFIG_V1';
 
 const DEFAULT_AUTONOMOUS_CONFIG: AutonomousMissionConfig = {
-  searchAltitude: 10, // 10 meters default
+  searchAltitude: 5, // 5 meters default
   searchBoundary: {
     type: 'RECTANGLE',
     coordinates: [

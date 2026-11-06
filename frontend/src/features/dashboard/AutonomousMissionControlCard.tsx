@@ -54,7 +54,7 @@ export const AutonomousMissionControlCard: React.FC<AutonomousMissionControlCard
   activeMissionTime,
 }) => {
   // 1. Search Altitude (Default: 10m, envelope: 5m–50m)
-  const [altitude, setAltitude] = useState<number>(10);
+  const [altitude, setAltitude] = useState<number>(5);
 
   // 2. Search Radius (Quick options: 5m, 10m, 50m, custom)
   const [selectedRadiusPreset, setSelectedRadiusPreset] = useState<number | 'custom'>(10);
