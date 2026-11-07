@@ -1366,6 +1366,10 @@ export class GroundStationMissionService {
       if (currentAlt < 1.0) {
         console.log(`[GCS Mission] Drone on ground (alt=${currentAlt.toFixed(1)}m). Initiating takeoff to ${alt}m...`);
         audioService.playBeep(880, 150);
+        try {
+          const { geofenceService } = await import('./geofenceService');
+          geofenceService.notifyTakeoffInitiated();
+        } catch {}
         await mavlinkService.setFlightMode('GUIDED');
         await mavlinkService.commandTakeoff(alt);
 

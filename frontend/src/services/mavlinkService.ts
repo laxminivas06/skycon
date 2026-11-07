@@ -1663,28 +1663,28 @@ class MAVLinkService {
           }
 
           if (Number.isFinite(alt)) {
+            this.telemetry.altitudeMsl = +alt.toFixed(2);
             // Track ground elevation baseline if disarmed on ground
-            if (!this.telemetry.isArmed && alt > 0 && this.groundElevationMsl === 0) {
+            if (!this.telemetry.isArmed && alt > 0) {
               this.groundElevationMsl = +alt.toFixed(2);
             }
 
             // CRITICAL FIX: In ArduPilot, VFR_HUD.alt is frequently absolute MSL elevation (e.g. 535.8m in India).
-            // Do NOT overwrite this.telemetry.altitude with raw MSL if GLOBAL_POSITION_INT (msg 33 relative_alt) is active!
-            const isRelativeAltFresh = (now - this.lastRelativeAltTimestamp) < 2500;
+            // Do NOT overwrite this.telemetry.altitude with raw MSL!
+            const isRelativeAltFresh = (now - this.lastRelativeAltTimestamp) < 3000;
             if (!isRelativeAltFresh) {
               if (!this.telemetry.isArmed) {
                 // Drone is physically disarmed on the ground -> strictly 0.0m AGL
                 this.telemetry.altitude = 0.0;
+                this.telemetry.relativeAltitude = 0.0;
               } else {
-                // Vehicle is armed: tare against ground elevation baseline
+                // Vehicle is armed: fallback tare against ground elevation baseline
                 const baseMsl = this.groundElevationMsl > 0
                   ? this.groundElevationMsl
                   : (this.homePoint.isSet && this.homePoint.altitude > 0 ? this.homePoint.altitude : 0);
-                if (baseMsl > 0 && alt >= (baseMsl - 20)) {
-                  this.telemetry.altitude = +Math.max(0, alt - baseMsl).toFixed(2);
-                } else if (alt < 80) {
-                  this.telemetry.altitude = +Math.max(0, alt).toFixed(2);
-                }
+                const fallbackAgl = baseMsl > 0 ? Math.max(0, alt - baseMsl) : (alt < 80 ? Math.max(0, alt) : 0);
+                this.telemetry.altitude = +fallbackAgl.toFixed(2);
+                this.telemetry.relativeAltitude = +fallbackAgl.toFixed(2);
               }
             }
           }
@@ -2148,7 +2148,10 @@ class MAVLinkService {
 
           // Record relative altitude timestamp and baseline MSL elevation
           this.lastRelativeAltTimestamp = now;
-          if (mslAlt > 0 && this.groundElevationMsl === 0) {
+          this.telemetry.altitudeMsl = +mslAlt.toFixed(2);
+          const aglMeters = relativeAlt;
+          this.telemetry.relativeAltitude = +aglMeters.toFixed(2);
+          if (mslAlt > 0 && (!this.telemetry.isArmed || this.groundElevationMsl === 0)) {
             this.groundElevationMsl = mslAlt;
           }
           if (mslAlt > 0 && !this.homePoint.isSet) {
@@ -2764,23 +2767,20 @@ class MAVLinkService {
         } catch (e) {}
 
         // Step 4 & 5: Transmit command and await COMMAND_ACK
-        let ack = await this.executeCommandLong(400, 1.0, param2, 0.0, 0.0, 0.0, 0.0, 0.0, 3000);
-        
-        // Auto-Bypass fallback: If standard arm was rejected on field/bench, seamlessly apply hardware bypass
-        if (!ack.success && !force) {
-          console.warn(`[ARM] Standard arm rejected (${ack.statustext || ack.resultName}). Seamlessly applying hardware bypass (param2=21196.0)...`);
-          this.addStatusMessage('NOTICE', 5, `Standard arm check (${ack.statustext || ack.resultName}) bypassed for flight.`);
-          ack = await this.executeCommandLong(400, 1.0, 21196.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3000);
-        }
+        const armParam2 = force ? 21196.0 : 0.0;
+        const ack = await this.executeCommandLong(400, 1.0, armParam2, 0.0, 0.0, 0.0, 0.0, 0.0, 3500);
 
-        // Step 6: If COMMAND_ACK is not accepted, transition state to DISARMED / FAILED
+        // Step 6: If COMMAND_ACK is not accepted, transition state to ARMING FAILED
         if (!ack.success) {
           this.connectionState.vehicleState = 'DISARMED';
           this.telemetry.vehicleState = 'DISARMED';
           this.telemetry.isArmed = false;
-          this.connectionState.preArmFailReason = ack.statustext || ack.resultName;
-          this.logDiagnostic('MAVLINK', `[ARM REJECTED] Pixhawk rejected arm: ${ack.statustext || ack.resultName}`, 'warn');
-          this.addStatusMessage('ERROR', 3, `Arming failed: ${ack.statustext || ack.resultName}`);
+          const failReason = ack.statustext
+            ? `ARMING FAILED: ${ack.statustext}`
+            : `ARMING FAILED: ${ack.resultName || 'Command rejected'}`;
+          this.connectionState.preArmFailReason = failReason;
+          this.logDiagnostic('MAVLINK', `[ARM REJECTED] Pixhawk rejected arm: ${failReason}`, 'warn');
+          this.addStatusMessage('ERROR', 3, failReason);
           this.notifyConnection();
           this.notifyTelemetry();
           return false;
@@ -2790,6 +2790,12 @@ class MAVLinkService {
         const armConfirmStart = Date.now();
         while (Date.now() - armConfirmStart < 3000) {
           if (this.telemetry.isArmed) {
+            // Re-latch ground elevation baseline at the moment of confirmed physical arming
+            if (this.telemetry.altitudeMsl && this.telemetry.altitudeMsl > 0) {
+              this.groundElevationMsl = this.telemetry.altitudeMsl;
+            }
+            this.connectionState.vehicleState = 'ARMED';
+            this.telemetry.vehicleState = 'ARMED';
             this.addStatusMessage('INFO', 6, 'Motors Armed ✓ Confirmed by Pixhawk Heartbeat');
             this.notifyConnection();
             this.notifyTelemetry();
@@ -4336,9 +4342,36 @@ class MAVLinkService {
       };
     }
 
-    // Cancel any prior in-flight command for the same command ID
+    // Deduplicate / Cancel prior in-flight command for the same command ID
     const existing = this.inFlightCommands.get(command);
     if (existing) {
+      const isIdentical = Math.abs(existing.params[0] - param1) < 0.001 && Math.abs(existing.params[1] - param2) < 0.001;
+      if (isIdentical && (Date.now() - existing.sentTimestamp) < 1800) {
+        // Return existing in-flight promise rather than superseding
+        return new Promise((resolve) => {
+          const checkTimer = setInterval(() => {
+            if (!this.inFlightCommands.has(command)) {
+              clearInterval(checkTimer);
+              resolve({
+                success: true,
+                result: 0,
+                resultName: 'MAV_RESULT_ACCEPTED',
+                message: `Command ${command} confirmed ✓`
+              });
+            }
+          }, 100);
+          setTimeout(() => {
+            clearInterval(checkTimer);
+            resolve({
+              success: false,
+              result: 4,
+              resultName: 'MAV_RESULT_TIMEOUT',
+              message: `Command ${command} in-flight wait timed out`
+            });
+          }, timeoutMs);
+        });
+      }
+
       clearTimeout(existing.timer);
       this.inFlightCommands.delete(command);
       existing.resolve({

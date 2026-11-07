@@ -135,6 +135,8 @@ export interface DroneTelemetry {
   latitude: number;
   longitude: number;
   altitude: number;
+  relativeAltitude?: number;
+  altitudeMsl?: number;
   targetAltitude: number;
   groundSpeed: number;
   airSpeed?: number;

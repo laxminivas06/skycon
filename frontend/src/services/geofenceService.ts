@@ -59,6 +59,59 @@ const DEFAULT_CONFIG: GeofenceConfig = {
  * Deterministic even-odd ray-casting algorithm to test whether a GPS point
  * is strictly inside an arbitrary closed polygon.
  */
+/**
+ * Coordinate Normalization Helper
+ * Normalizes all polygon vertices and drone coordinates supporting {lat, lon}, {lat, lng}, and [lat, lng].
+ * Filters out invalid or (0,0) coordinates.
+ */
+export function normalizeCoord(pt: any): LatLngPoint | null {
+  if (!pt) return null;
+  let lat = 0;
+  let lng = 0;
+  if (Array.isArray(pt)) {
+    lat = Number(pt[0]);
+    lng = Number(pt[1]);
+  } else if (typeof pt === 'object') {
+    lat = Number(pt.lat ?? pt.latitude ?? 0);
+    lng = Number(pt.lng ?? pt.lon ?? pt.longitude ?? 0);
+  }
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (Math.abs(lat) < 0.0001 && Math.abs(lng) < 0.0001) return null;
+  if (Math.abs(lat) > 90.0 || Math.abs(lng) > 180.0) return null;
+  return { lat, lng };
+}
+
+/**
+ * Calculates whether a point lies within a transit corridor of given width
+ * connecting a start point to an end point (perpendicular distance test).
+ */
+export function isPointInCorridor(
+  dronePt: LatLngPoint,
+  startPt: LatLngPoint,
+  endPt: LatLngPoint,
+  corridorWidthMeters: number = 4.0
+): boolean {
+  const radLat = (startPt.lat * Math.PI) / 180;
+  const dx = (endPt.lng - startPt.lng) * 111320 * Math.cos(radLat);
+  const dy = (endPt.lat - startPt.lat) * 111320;
+  const segLenSq = dx * dx + dy * dy;
+  if (segLenSq < 0.01) {
+    const d = computeHaversine(startPt.lat, startPt.lng, dronePt.lat, dronePt.lng);
+    return d <= (corridorWidthMeters / 2);
+  }
+
+  const px = (dronePt.lng - startPt.lng) * 111320 * Math.cos(radLat);
+  const py = (dronePt.lat - startPt.lat) * 111320;
+
+  // Project point onto line segment
+  const t = Math.max(0, Math.min(1, (px * dx + py * dy) / segLenSq));
+  const projX = t * dx;
+  const projY = t * dy;
+  const distToSeg = Math.hypot(px - projX, py - projY);
+
+  return distToSeg <= (corridorWidthMeters / 2);
+}
+
 export function isPointInsideGeofence(lat: number, lon: number, polygon: LatLngPoint[]): boolean {
   if (!polygon || polygon.length < 3) return true;
   let inside = false;
@@ -285,6 +338,7 @@ class GeofenceService {
   private hasClimbedAboveFloor = false;
   private lastNotifyTimestamp = 0;
   private lastBreachActionTimestamp = 0;
+  private takeoffInitiatedAt = 0;
 
   constructor() {
     this.restoreConfig();
@@ -388,6 +442,33 @@ class GeofenceService {
    * Positive distance = inside boundary; Negative distance = outside boundary.
    */
   private computeHorizontalDistance(dronePt: LatLngPoint, anchor: LatLngPoint): { isBreached: boolean; distToEdge: number } {
+    // ADDC 2026 Dual-Zone Containment Check:
+    // Zone B: Launch/Landing Pad Safe Circle (6.0m radius around Home)
+    const home = mavlinkService.getHomePoint();
+    if (home && home.isSet && Math.abs(home.latitude) > 0.001) {
+      const distToHome = computeHaversine(home.latitude, home.longitude, dronePt.lat, dronePt.lng);
+      if (distToHome <= 6.0) {
+        // Drone is on or right above Launch/Landing Pad -> Inside Zone B
+        return { isBreached: false, distToEdge: +(6.0 - distToHome).toFixed(1) };
+      }
+
+      // Zone C: Transit Corridor (4.0m width connecting Home to closest polygon vertex)
+      const vertices = this.getBoundaryVertices();
+      if (vertices.length >= 3) {
+        let closestVertex = vertices[0];
+        let minDist = computeHaversine(home.latitude, home.longitude, vertices[0].lat, vertices[0].lng);
+        for (let i = 1; i < vertices.length; i++) {
+          const d = computeHaversine(home.latitude, home.longitude, vertices[i].lat, vertices[i].lng);
+          if (d < minDist) {
+            minDist = d;
+            closestVertex = vertices[i];
+          }
+        }
+        if (isPointInCorridor(dronePt, { lat: home.latitude, lng: home.longitude }, closestVertex, 4.0)) {
+          return { isBreached: false, distToEdge: 2.0 };
+        }
+      }
+    }
     if (this.config.shape === 'CIRCLE') {
       const distFromCenter = computeHaversine(anchor.lat, anchor.lng, dronePt.lat, dronePt.lng);
       const radius = this.config.radiusMeters || 50;
@@ -488,6 +569,23 @@ class GeofenceService {
       return;
     }
 
+    // Ground Operations & Takeoff Grace Suppression:
+    // 1. Drone is physically disarmed on the ground
+    // 2. Drone altitude < 1.2m AGL
+    // 3. Within 8.0s of takeoff initiation
+    const isTakeoffGracePeriod = (Date.now() - this.takeoffInitiatedAt) < 8000;
+    if (!telem.isArmed || currentAlt < 1.2 || isTakeoffGracePeriod) {
+      if (this.state.isBreached) {
+        this.state.isBreached = false;
+        this.state.breachReason = null;
+        this.autoFailsafeTriggered = false;
+        this.notify();
+      }
+      this.consecutiveBreachCount = 0;
+      this.consecutiveClearCount++;
+      return;
+    }
+
     const dronePt: LatLngPoint = { lat: telem.latitude, lng: telem.longitude };
     const { isBreached: isHorizontalBreached, distToEdge } = this.computeHorizontalDistance(dronePt, anchor);
     this.state.distanceToBoundaryMeters = distToEdge;
@@ -584,8 +682,8 @@ class GeofenceService {
 
   private async executeBreachAction(action: GeofenceBreachAction) {
     const now = Date.now();
-    if (now - this.lastBreachActionTimestamp < 3000) {
-      return; // 3-second cooldown prevents command floods & 'superseded' errors
+    if (now - this.lastBreachActionTimestamp < 10000) {
+      return; // 10-second cooldown prevents command floods & 'superseded' errors
     }
     this.lastBreachActionTimestamp = now;
 
@@ -677,6 +775,10 @@ class GeofenceService {
     this.notify();
   }
 
+  public notifyTakeoffInitiated() {
+    this.takeoffInitiatedAt = Date.now();
+  }
+
   public clearGeofence() {
     this.config.enabled = false;
     this.state.enabled = false;
@@ -760,11 +862,34 @@ class GeofenceService {
       if (vertices.length >= 3) {
         const inside = isPointInsideGeofence(droneLat, droneLng, vertices);
         if (!inside) {
+          // Check Zone B: Launch/Landing Pad Safe Circle (6.0m around Home)
+          const home = mavlinkService.getHomePoint();
+          if (home && home.isSet && Math.abs(home.latitude) > 0.001) {
+            const distToHome = computeHaversine(home.latitude, home.longitude, droneLat, droneLng);
+            if (distToHome <= 6.0) {
+              // Drone is on Launch Pad Safe Circle -> Allowed to arm!
+              return { canArm: true };
+            }
+            // Check Zone C: Transit Corridor
+            let closestVertex = vertices[0];
+            let minDist = computeHaversine(home.latitude, home.longitude, vertices[0].lat, vertices[0].lng);
+            for (let i = 1; i < vertices.length; i++) {
+              const d = computeHaversine(home.latitude, home.longitude, vertices[i].lat, vertices[i].lng);
+              if (d < minDist) {
+                minDist = d;
+                closestVertex = vertices[i];
+              }
+            }
+            if (isPointInCorridor({ lat: droneLat, lng: droneLng }, { lat: home.latitude, lng: home.longitude }, closestVertex, 4.0)) {
+              return { canArm: true };
+            }
+          }
+
           const centroid = getPolygonCentroid(vertices);
           const distToCenter = computeHaversine(centroid.lat, centroid.lng, droneLat, droneLng);
           return {
             canArm: false,
-            reason: `ARM BLOCKED: Drone is outside active Geofence boundary (${distToCenter.toFixed(0)}m from centroid).`
+            reason: `ARM BLOCKED: Drone is outside active Geofence boundary (${distToCenter.toFixed(0)}m from centroid, outside Launch Pad Zone B).`
           };
         }
       }
