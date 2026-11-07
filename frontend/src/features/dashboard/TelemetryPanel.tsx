@@ -55,6 +55,7 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
   const [isDisarming, setIsDisarming] = useState<boolean>(false);
   const [forceArm, setForceArm] = useState<boolean>(false);
   const [armFeedback, setArmFeedback] = useState<string | null>(null);
+  const [altDisplayMode, setAltDisplayMode] = useState<'AGL' | 'MSL'>('AGL');
 
   const isBusy = isArming || isDisarming;
 
@@ -131,6 +132,8 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
   };
 
   const alt = Math.max(0, telemetry.altitudeMeters || 0);
+  const mslAlt = telemetry.gpsAltitudeMeters || (telemetry.rawTelemetry?.gps?.altitude || 0);
+  const displayedAlt = altDisplayMode === 'AGL' ? alt : (mslAlt > 0 ? mslAlt : alt);
   const heading = Math.round(telemetry.headingDeg || 0);
   const spd = Math.max(0, telemetry.speedMs || 0);
   const vSpd = telemetry.verticalSpeedMs || 0;
@@ -162,9 +165,31 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
       <Card
         title="ALTITUDE"
         action={
-          <span className="text-[10px] font-mono font-bold text-amber-400 bg-amber-950/40 border border-amber-500/30 px-1.5 py-0.5 rounded">
-            AGL / MSL
-          </span>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setAltDisplayMode(m => m === 'AGL' ? 'MSL' : 'AGL')}
+              className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded border transition-colors cursor-pointer select-none ${
+                altDisplayMode === 'AGL'
+                  ? 'text-amber-400 bg-amber-950/60 border-amber-500/50 hover:bg-amber-900/60'
+                  : 'text-cyan-400 bg-cyan-950/60 border-cyan-500/50 hover:bg-cyan-900/60'
+              }`}
+              title="Click to toggle between AGL (Above Ground Level) and MSL (Mean Sea Level) altitude"
+            >
+              {altDisplayMode === 'AGL' ? 'AGL (0-25m)' : 'MSL (Sea Level)'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                mavlinkService.calibrateGroundAltitude();
+                onNotification?.('Ground altitude zeroed to 0.0m AGL ✓');
+              }}
+              className="text-[9px] font-mono font-bold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 border border-slate-700 px-1 py-0.5 rounded cursor-pointer transition active:scale-95"
+              title="Tare/Zero Ground Altitude (Calibrate 0.0m AGL)"
+            >
+              Tare
+            </button>
+          </div>
         }
         className="shrink-0 bg-[#0E131A] border-[var(--uav-card-border)] shadow-md"
         contentClassName="p-3 flex flex-col gap-2.5"
@@ -186,7 +211,7 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
                 cy="38"
                 r="32"
                 fill="none"
-                stroke="#F59E0B"
+                stroke={altDisplayMode === 'AGL' ? '#F59E0B' : '#06B6D4'}
                 strokeWidth="5.5"
                 strokeDasharray={arcCircumference}
                 strokeDashoffset={altOffset}
@@ -196,23 +221,34 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
             </svg>
             <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
               <span className="text-[18px] font-black font-orbitron text-white leading-none">
-                {alt.toFixed(1)}
+                {displayedAlt.toFixed(1)}
               </span>
-              <span className="text-[8.5px] text-amber-400 font-mono font-bold mt-0.5">METERS</span>
+              <span className={`text-[8.5px] font-mono font-bold mt-0.5 ${altDisplayMode === 'AGL' ? 'text-amber-400' : 'text-cyan-400'}`}>
+                {altDisplayMode === 'AGL' ? 'M (AGL)' : 'M (MSL)'}
+              </span>
             </div>
           </div>
 
           {/* Metric Details */}
           <div className="flex flex-col justify-center gap-1.5 flex-1 pl-3">
             <div>
-              <span className="text-[10px] text-slate-400 font-mono block">CURRENT ALTITUDE</span>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-slate-400 font-mono block">
+                  {altDisplayMode === 'AGL' ? 'CURRENT ALTITUDE (AGL)' : 'MSL ELEVATION'}
+                </span>
+                {mslAlt > 0 && altDisplayMode === 'AGL' && (
+                  <span className="text-[9px] text-slate-500 font-mono">
+                    Ref: {mslAlt.toFixed(0)}m MSL
+                  </span>
+                )}
+              </div>
               <div className="flex items-baseline gap-1">
                 <span className="text-2xl font-black font-orbitron text-white">
-                  {alt.toFixed(1)}
+                  {displayedAlt.toFixed(1)}
                 </span>
-                <span className="text-[11px] font-bold text-amber-400 font-mono">m</span>
+                <span className={`text-[11px] font-bold font-mono ${altDisplayMode === 'AGL' ? 'text-amber-400' : 'text-cyan-400'}`}>m</span>
                 <span className="text-[10px] text-slate-500 font-mono ml-1">
-                  ({(alt * 3.28084).toFixed(1)} ft)
+                  ({(displayedAlt * 3.28084).toFixed(1)} ft)
                 </span>
               </div>
             </div>
@@ -244,11 +280,11 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
         <div className="space-y-1 pt-1 border-t border-slate-800/80">
           <div className="flex justify-between text-[9px] font-mono text-slate-400">
             <span>GROUND 0m</span>
-            <span>CEILING {altMax}m</span>
+            <span>CEILING {altMax}m AGL</span>
           </div>
           <div className="w-full bg-[#181F2A] h-1.5 rounded-full overflow-hidden">
             <div
-              className="bg-amber-400 h-full transition-all duration-300"
+              className={`h-full transition-all duration-300 ${altDisplayMode === 'AGL' ? 'bg-amber-400' : 'bg-cyan-400'}`}
               style={{ width: `${Math.min(100, (alt / altMax) * 100)}%` }}
             />
           </div>

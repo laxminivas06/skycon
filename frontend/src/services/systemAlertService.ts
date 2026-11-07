@@ -94,6 +94,12 @@ class SystemAlertService {
     if (lower.includes('outside the selected search boundary') || lower.includes('outside the boundary')) {
       return 'Action: Move drone inside the configured search boundary on the map before arming.';
     }
+    if (lower.includes('altitude ceiling') || lower.includes('ceiling exceeded')) {
+      return 'Action: Check AGL altitude calibration. Click "Zero AGL" on the dashboard to tare ground elevation.';
+    }
+    if (lower.includes('superseded by new command') || lower.includes('command 176')) {
+      return 'Action: Pixhawk command rate-limit cleared. Avoid rapid mode switching.';
+    }
     if (lower.includes('low battery') || lower.includes('voltage') || lower.includes('batt')) {
       return 'Action: Replace or recharge LiPo battery. Check safe minimum threshold (10.5V for 3S).';
     }
@@ -156,3 +162,4 @@ class SystemAlertService {
 }
 
 export const systemAlertService = new SystemAlertService();
+

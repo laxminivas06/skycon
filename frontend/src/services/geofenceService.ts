@@ -283,6 +283,8 @@ class GeofenceService {
   private consecutiveClearCount = 0;
   private pendingBreachReason: string | null = null;
   private hasClimbedAboveFloor = false;
+  private lastNotifyTimestamp = 0;
+  private lastBreachActionTimestamp = 0;
 
   constructor() {
     this.restoreConfig();
@@ -433,7 +435,22 @@ class GeofenceService {
   }
 
   private evaluateBreach(telem: any) {
-    const currentAlt = telem.altitude || telem.altitudeMeters || 0;
+    let currentAlt = telem.altitude ?? telem.altitudeMeters ?? 0;
+
+    // Strict Ground Safety Guard:
+    // If vehicle is disarmed, it is physically sitting on the ground -> strictly 0.0m AGL!
+    if (!telem.isArmed) {
+      currentAlt = 0.0;
+    } else if (currentAlt > 100.0) {
+      // In SAE India ADDC, no autonomous drone flies > 100m AGL (max ceiling is 25m).
+      // A reading > 100m while armed indicates raw MSL elevation (e.g. 535.8m) leaked through.
+      const homeAlt = mavlinkService.getHomePoint()?.altitude || telem.gps?.altitude || 0;
+      if (homeAlt > 50 && currentAlt >= (homeAlt - 20)) {
+        currentAlt = Math.max(0, currentAlt - homeAlt);
+      } else {
+        currentAlt = 0.0;
+      }
+    }
     this.state.currentAltitudeMeters = currentAlt;
     const anchor = this.getEffectiveAnchor();
     this.state.effectiveAnchor = anchor;
@@ -496,11 +513,17 @@ class GeofenceService {
     );
 
     // Ceiling breach with 0.3m hysteresis to prevent oscillation near boundary
-    const isCeilingBreached = this.state.isBreached && (this.state.breachReason?.includes('Ceiling') ?? false)
-      ? currentAlt > (this.config.maxAltitudeMeters - 0.3)
-      : currentAlt > this.config.maxAltitudeMeters;
+    // CRITICAL FIX: Ceiling breach applies ONLY when vehicle is confirmed armed and airborne!
+    // A drone on the ground can NEVER breach the altitude ceiling!
+    const isCeilingBreached = Boolean(
+      telem.isArmed &&
+      (this.state.isBreached && (this.state.breachReason?.includes('Ceiling') ?? false)
+        ? currentAlt > (this.config.maxAltitudeMeters - 0.3)
+        : currentAlt > this.config.maxAltitudeMeters)
+    );
 
     const rawBreach = isHorizontalBreached || isCeilingBreached || isFloorBreached;
+    const wasBreachedBefore = this.state.isBreached;
 
     if (rawBreach) {
       this.consecutiveClearCount = 0;
@@ -513,7 +536,6 @@ class GeofenceService {
       this.pendingBreachReason = reason;
 
       // Debounce: require 3 consecutive breach samples (~150-300ms) to confirm breach.
-      // This eliminates instantaneous GPS coordinate jitter and baro spikes.
       if (this.consecutiveBreachCount >= 3) {
         const wasAlreadyBreached = this.state.isBreached;
         this.state.isBreached = true;
@@ -529,8 +551,11 @@ class GeofenceService {
 
         // Execute autonomous failsafe action ONLY ONCE per breach event if airborne and armed
         if (telem.isArmed && !this.autoFailsafeTriggered && !wasAlreadyBreached) {
-          this.autoFailsafeTriggered = true;
-          this.executeBreachAction(this.config.breachAction);
+          const currentMode = (telem.flightMode || telem.mode || '').toUpperCase();
+          if (currentMode !== this.config.breachAction.toUpperCase()) {
+            this.autoFailsafeTriggered = true;
+            this.executeBreachAction(this.config.breachAction);
+          }
         }
       }
     } else {
@@ -547,18 +572,31 @@ class GeofenceService {
       }
     }
 
-    this.notify();
+    // Smart notify throttling: Notify instantly when breach status toggles, or throttle to 4Hz (250ms)
+    // This completely eliminates React re-render looping and website flickering!
+    const breachStateChanged = (this.state.isBreached !== wasBreachedBefore);
+    const now = Date.now();
+    if (breachStateChanged || now - this.lastNotifyTimestamp >= 250) {
+      this.lastNotifyTimestamp = now;
+      this.notify();
+    }
   }
 
   private async executeBreachAction(action: GeofenceBreachAction) {
+    const now = Date.now();
+    if (now - this.lastBreachActionTimestamp < 3000) {
+      return; // 3-second cooldown prevents command floods & 'superseded' errors
+    }
+    this.lastBreachActionTimestamp = now;
+
     console.warn(`[GEOFENCE FAILSAFE] Executing breach response: ${action}`);
     try {
       if (action === 'RTL') {
-        await mavlinkService.setFlightMode('RTL');
+        await mavlinkService.commandRTL();
       } else if (action === 'LOITER') {
-        await mavlinkService.setFlightMode('LOITER');
+        await mavlinkService.commandHold();
       } else if (action === 'LAND') {
-        await mavlinkService.setFlightMode('LAND');
+        await mavlinkService.commandLand();
       } else if (action === 'POSHOLD') {
         await mavlinkService.setFlightMode('POSHOLD');
       }

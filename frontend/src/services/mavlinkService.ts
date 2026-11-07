@@ -431,6 +431,10 @@ class MAVLinkService {
     lastUpdated: 0
   };
 
+  // Ground elevation reference (MSL) and relative altitude timing for rock-solid AGL calculations
+  private groundElevationMsl: number = 0;
+  private lastRelativeAltTimestamp: number = 0;
+
   private modeChangeResolver: ((res: { success: boolean; message: string }) => void) | null = null;
   private modeChangeTimer: any = null;
   private downloadItemRetryTimer: any = null;
@@ -875,14 +879,17 @@ class MAVLinkService {
   }
 
   public calibrateGroundAltitude(): void {
-    const currentMsl = this.telemetry.gps.altitude || (this.homePoint.isSet ? this.homePoint.altitude : 0);
-    if (this.homePoint.isSet && currentMsl > 0) {
-      this.homePoint.altitude = currentMsl;
+    const currentMsl = this.telemetry.gps.altitude || (this.homePoint.isSet ? this.homePoint.altitude : 0) || this.groundElevationMsl;
+    if (currentMsl > 0) {
+      this.groundElevationMsl = currentMsl;
+      if (this.homePoint.isSet) {
+        this.homePoint.altitude = currentMsl;
+      }
     }
     this.telemetry.altitude = 0.0;
     this.notifyTelemetry();
-    this.addStatusMessage('NOTICE', 5, 'Ground altitude zeroed.');
-    this.logDiagnostic('SYSTEM', 'Ground altitude calibrated to 0.0m AGL', 'success');
+    this.addStatusMessage('NOTICE', 5, 'Ground altitude zeroed (0.0m AGL calibrated).');
+    this.logDiagnostic('SYSTEM', `Ground altitude calibrated to 0.0m AGL (Base Elevation: ${this.groundElevationMsl > 0 ? this.groundElevationMsl.toFixed(1) + 'm MSL' : 'Auto'})`, 'success');
   }
 
   private addStatusMessage(severity: PixhawkStatusMessage['severity'], severityLevel: number, text: string) {
@@ -1654,8 +1661,32 @@ class MAVLinkService {
           if (Number.isFinite(heading) && heading >= 0) {
             this.telemetry.heading = heading;
           }
-          if (Number.isFinite(alt) && alt >= 0) {
-            this.telemetry.altitude = +alt.toFixed(2);
+
+          if (Number.isFinite(alt)) {
+            // Track ground elevation baseline if disarmed on ground
+            if (!this.telemetry.isArmed && alt > 0 && this.groundElevationMsl === 0) {
+              this.groundElevationMsl = +alt.toFixed(2);
+            }
+
+            // CRITICAL FIX: In ArduPilot, VFR_HUD.alt is frequently absolute MSL elevation (e.g. 535.8m in India).
+            // Do NOT overwrite this.telemetry.altitude with raw MSL if GLOBAL_POSITION_INT (msg 33 relative_alt) is active!
+            const isRelativeAltFresh = (now - this.lastRelativeAltTimestamp) < 2500;
+            if (!isRelativeAltFresh) {
+              if (!this.telemetry.isArmed) {
+                // Drone is physically disarmed on the ground -> strictly 0.0m AGL
+                this.telemetry.altitude = 0.0;
+              } else {
+                // Vehicle is armed: tare against ground elevation baseline
+                const baseMsl = this.groundElevationMsl > 0
+                  ? this.groundElevationMsl
+                  : (this.homePoint.isSet && this.homePoint.altitude > 0 ? this.homePoint.altitude : 0);
+                if (baseMsl > 0 && alt >= (baseMsl - 20)) {
+                  this.telemetry.altitude = +Math.max(0, alt - baseMsl).toFixed(2);
+                } else if (alt < 80) {
+                  this.telemetry.altitude = +Math.max(0, alt).toFixed(2);
+                }
+              }
+            }
           }
           this.notifyTelemetry();
         }
@@ -2115,6 +2146,15 @@ class MAVLinkService {
           const vz = view.getInt16(24, true) / 100;
           const hdg = view.getUint16(26, true) / 100;
 
+          // Record relative altitude timestamp and baseline MSL elevation
+          this.lastRelativeAltTimestamp = now;
+          if (mslAlt > 0 && this.groundElevationMsl === 0) {
+            this.groundElevationMsl = mslAlt;
+          }
+          if (mslAlt > 0 && !this.homePoint.isSet) {
+            this.homePoint.altitude = mslAlt;
+          }
+
           // Update vertical climb/descent speed from NED Z velocity (vz > 0 is down, vz < 0 is up)
           if (Number.isFinite(vz)) {
             this.telemetry.verticalSpeed = +(-vz).toFixed(2);
@@ -2165,7 +2205,12 @@ class MAVLinkService {
               }
             }
           }
-          this.telemetry.altitude = +Math.max(0, relativeAlt).toFixed(2);
+          // AGL Altitude: Clamped to 0.0m on ground when disarmed, strictly relativeAlt in flight
+          if (!this.telemetry.isArmed && Math.abs(relativeAlt) < 1.5) {
+            this.telemetry.altitude = 0.0;
+          } else {
+            this.telemetry.altitude = +Math.max(0, relativeAlt).toFixed(2);
+          }
           const rawHdg = view.getUint16(26, true);
           if (rawHdg !== 65535) {
             this.telemetry.heading = Math.round(rawHdg / 100);
@@ -2258,6 +2303,20 @@ class MAVLinkService {
                 if (this.modeChangeTimer) clearTimeout(this.modeChangeTimer);
                 res({ success: false, message: explanation });
               }
+              setTimeout(() => {
+                if (this.connectionState.lastModeChangeError === explanation) {
+                  this.connectionState.lastModeChangeError = undefined;
+                  this.notifyConnection();
+                }
+              }, 4000);
+            } else if (lower.includes('superseded')) {
+              // Rate-limit notification from Pixhawk command scheduler
+              setTimeout(() => {
+                if (this.connectionState.lastModeChangeError && this.connectionState.lastModeChangeError.toLowerCase().includes('superseded')) {
+                  this.connectionState.lastModeChangeError = undefined;
+                  this.notifyConnection();
+                }
+              }, 3000);
             }
 
             // Pixhawk explicitly announces "Flight plan received" when all mission items are safely committed to EEPROM
@@ -2886,6 +2945,14 @@ class MAVLinkService {
       this.logDiagnostic('ERROR', `Cannot set mode ${modeName}: MAVLink not connected`, 'error');
       return false;
     }
+
+    // Command deduplication: If vehicle is already confirmed in the requested mode,
+    // do not flood Pixhawk with duplicate MAV_CMD_DO_SET_MODE (command 176) packets!
+    if ((this.telemetry.flightMode || '').toUpperCase() === modeName.toUpperCase() && !this.connectionState.pendingFlightMode) {
+      this.logDiagnostic('MAVLINK', `[MODE] Vehicle is already in ${modeName} flight mode ✓`, 'info');
+      return true;
+    }
+
     const modeNumbers: Record<string, number> = {
       STABILIZE: 0,
       ACRO: 1,

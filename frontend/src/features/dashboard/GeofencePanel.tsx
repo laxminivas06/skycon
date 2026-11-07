@@ -211,6 +211,34 @@ export const GeofencePanel: React.FC<GeofencePanelProps> = ({
             <span className="font-bold text-red-400">{geofenceState.breachAction}</span>
           </div>
         </div>
+
+        {/* Live AGL Altitude & Ground Tare Status */}
+        <div className="flex items-center justify-between p-2 rounded-lg bg-slate-900/90 border border-slate-800 text-[10px]">
+          <div>
+            <span className="text-slate-400 block font-mono">DRONE ALTITUDE (AGL)</span>
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-sm font-black font-orbitron text-amber-300">
+                {(telemetry.altitude ?? 0).toFixed(1)}m
+              </span>
+              {(telemetry.gps?.altitude ?? 0) > 0 && (
+                <span className="text-[9px] text-slate-500 font-mono">
+                  (Ground: {(telemetry.gps?.altitude ?? 0).toFixed(0)}m MSL)
+                </span>
+              )}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              mavlinkService.calibrateGroundAltitude();
+              showNotification('Ground altitude zeroed to 0.0m AGL ✓');
+            }}
+            className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 font-bold font-mono text-[9px] transition active:scale-95 cursor-pointer shadow-sm"
+            title="Zero ground altitude baseline to 0.0m AGL"
+          >
+            Zero AGL
+          </button>
+        </div>
       </div>
 
       {/* Temporary toast notice */}
