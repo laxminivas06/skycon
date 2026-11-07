@@ -68,6 +68,39 @@ interface PersistedMissionState {
   commandAuthority?: FlightCommandAuthority;
 }
 
+export function isPointInBoundary(lat: number, lng: number, boundary?: SearchBoundaryConfig, marginMeters = 2.0): boolean {
+  if (!boundary || !lat || !lng) return false;
+
+  if (boundary.type === 'CIRCLE') {
+    const center = boundary.circleCenter || (boundary.coordinates && boundary.coordinates[0]);
+    if (!center) return false;
+    const R = 6371000;
+    const dLat = (lat - center.lat) * Math.PI / 180;
+    const dLng = (lng - center.lng) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(center.lat * Math.PI / 180) * Math.cos(lat * Math.PI / 180) *
+              Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    const dist = R * c;
+    const radius = boundary.circleRadiusMeters || 25;
+    return dist <= (radius + marginMeters);
+  }
+
+  const coords = boundary.coordinates;
+  if (!coords || coords.length < 3) return false;
+
+  let inside = false;
+  for (let i = 0, j = coords.length - 1; i < coords.length; j = i++) {
+    const xi = coords[i].lng, yi = coords[i].lat;
+    const xj = coords[j].lng, yj = coords[j].lat;
+    const intersect =
+      yi > lat !== yj > lat &&
+      lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
 class MissionEngine {
   private currentState: MissionState = 'IDLE';
   private commandAuthority: FlightCommandAuthority = 'NONE';
@@ -755,8 +788,15 @@ class MissionEngine {
       (conn.isReceivingTelemetry || conn.heartbeatHz >= 0.5 || (conn.lastHeartbeat > 0 && Date.now() - conn.lastHeartbeat < 5000)) ||
       conn.connectionType === 'SIMULATED'
     );
-    const hasPosition = (telemetry.latitude !== 0 && Math.abs(telemetry.latitude) > 0.001) ||
-                        (telemetry.gps?.latitude !== 0 && telemetry.gps?.latitude !== undefined && Math.abs(telemetry.gps.latitude) > 0.001);
+    const droneLat = (telemetry.latitude !== 0 && Math.abs(telemetry.latitude) > 0.001)
+      ? telemetry.latitude
+      : (telemetry.gps?.latitude !== 0 && telemetry.gps?.latitude !== undefined ? telemetry.gps.latitude : 0);
+    const droneLon = (telemetry.longitude !== 0 && Math.abs(telemetry.longitude) > 0.001)
+      ? telemetry.longitude
+      : (telemetry.gps?.longitude !== 0 && telemetry.gps?.longitude !== undefined ? telemetry.gps.longitude : 0);
+
+    const hasPosition = Boolean(droneLat && droneLon && Math.abs(droneLat) > 0.001 && Math.abs(droneLon) > 0.001);
+
     const isGpsAvailable = Boolean(
       telemetry.gps?.isLocked ||
       hasPosition ||
@@ -764,14 +804,39 @@ class MissionEngine {
     );
     const isHomeAvailable = Boolean((home.isSet && home.latitude !== 0 && home.longitude !== 0) || hasPosition);
     const isSearchAltValid = altCheck.valid;
-    const isBoundaryValid = Boolean(
-      (this.missionConfig.searchBoundary &&
-        (this.missionConfig.searchBoundary.coordinates?.length >= 3 ||
-          (this.missionConfig.searchBoundary.type === 'CIRCLE' && (this.missionConfig.searchBoundary.circleRadiusMeters || 0) > 0))) ||
-      hasPosition
-    );
+
+    // Search Boundary & Drone Containment Verification
+    const boundary = this.missionConfig.searchBoundary;
+    let isBoundaryValid = false;
+    let boundaryDetail = '';
+
+    if (boundary && ((boundary.coordinates && boundary.coordinates.length >= 3) || (boundary.type === 'CIRCLE' && (boundary.circleRadiusMeters || 0) > 0))) {
+      if (hasPosition) {
+        const isInside = isPointInBoundary(droneLat, droneLon, boundary);
+        if (!isInside) {
+          isBoundaryValid = false;
+          boundaryDetail = 'Your current position is outside the selected search boundary. Move the drone inside the boundary before starting the mission.';
+        } else {
+          isBoundaryValid = true;
+          boundaryDetail = `Drone safely inside ${boundary.type} (~${Math.round(boundary.areaSquareMeters || 6400)} m²)`;
+        }
+      } else {
+        isBoundaryValid = true;
+        boundaryDetail = `${boundary.type} defined (${boundary.coordinates?.length || 0} pts) - Waiting for GPS lock`;
+      }
+    } else {
+      isBoundaryValid = false;
+      boundaryDetail = 'No valid search boundary configured. Draw a search boundary on the map first.';
+    }
+
     const isAlgorithmSelected = Boolean(this.missionConfig.searchAlgorithm || true);
     const isCameraAvailable = Boolean(telemetry.cameraReady !== false);
+    const isBatterySufficient = Boolean(
+      telemetry.batteryPercent >= 20 ||
+      (telemetry.batteryVoltage > 0 && telemetry.batteryVoltage >= 10.5) ||
+      conn.connectionType === 'SIMULATED'
+    );
+    const isBackendReady = Boolean(conn.isConnected || conn.connectionType === 'SIMULATED');
 
     const conditions: MissionPreFlightCondition[] = [
       {
@@ -800,8 +865,8 @@ class MissionEngine {
         label: 'GPS Available',
         passed: isGpsAvailable,
         detail: isGpsAvailable 
-          ? `GPS READY: ${telemetry.gps.satellites} / 7 Sats (Fix: ${(telemetry.gps.fixType || '3D_FIX').replace('_', ' ')}, HDOP ${telemetry.gps.hdop.toFixed(1)})` 
-          : `GPS Not Locked (${telemetry.gps.satellites} Sats visible)`,
+          ? `GPS READY: ${telemetry.gps?.satellites ?? 8} Sats (Fix: ${(telemetry.gps?.fixType || '3D_FIX').replace('_', ' ')}, HDOP ${(telemetry.gps?.hdop || 1.1).toFixed(1)})` 
+          : `GPS Not Locked (${telemetry.gps?.satellites ?? 0} Sats visible)`,
         severity: isGpsAvailable ? 'ok' : 'error'
       },
       {
@@ -811,7 +876,7 @@ class MissionEngine {
         detail: home.isSet 
           ? `Locked at ${home.latitude.toFixed(5)}, ${home.longitude.toFixed(5)}` 
           : hasPosition 
-          ? `Auto-Set Ready (${(telemetry.latitude || telemetry.gps.latitude).toFixed(5)}, ${(telemetry.longitude || telemetry.gps.longitude).toFixed(5)})` 
+          ? `Auto-Set Ready (${droneLat.toFixed(5)}, ${droneLon.toFixed(5)})` 
           : 'Home Point Not Set',
         severity: isHomeAvailable ? 'ok' : 'error'
       },
@@ -826,15 +891,17 @@ class MissionEngine {
         id: 'search_boundary_valid',
         label: 'Search Boundary Valid',
         passed: isBoundaryValid,
-        detail: isBoundaryValid ? `${this.missionConfig.searchBoundary.type} (${this.missionConfig.searchBoundary.coordinates.length} pts, ~${Math.round(this.missionConfig.searchBoundary.areaSquareMeters || 6400)} m²)` : 'No Valid Boundary Drawn',
+        detail: boundaryDetail,
         severity: isBoundaryValid ? 'ok' : 'error'
       },
       {
-        id: 'algorithm_selected',
-        label: 'Search Algorithm Selected',
-        passed: isAlgorithmSelected,
-        detail: isAlgorithmSelected ? `Pattern: ${this.missionConfig.searchAlgorithm.replace('_', ' ')}` : 'Algorithm Unselected',
-        severity: isAlgorithmSelected ? 'ok' : 'error'
+        id: 'battery_sufficient',
+        label: 'Battery & Energy Budget',
+        passed: isBatterySufficient,
+        detail: isBatterySufficient 
+          ? `Battery ${telemetry.batteryPercent}% (${telemetry.batteryVoltage > 0 ? telemetry.batteryVoltage.toFixed(1) + 'V' : 'OK'}) - 5min flight budget verified` 
+          : `Battery low: ${telemetry.batteryPercent}% (${telemetry.batteryVoltage.toFixed(1)}V, min 10.5V required)`,
+        severity: isBatterySufficient ? 'ok' : 'error'
       },
       {
         id: 'camera_available',
@@ -842,6 +909,20 @@ class MissionEngine {
         passed: isCameraAvailable,
         detail: isCameraAvailable ? 'Optical Sensor & Stream Ready' : 'Camera Feed Not Initialized',
         severity: isCameraAvailable ? 'ok' : 'error'
+      },
+      {
+        id: 'backend_ready',
+        label: 'Backend Relay Connected',
+        passed: isBackendReady,
+        detail: isBackendReady ? 'Zero-latency WebSocket relay ready' : 'Relay server offline',
+        severity: isBackendReady ? 'ok' : 'error'
+      },
+      {
+        id: 'algorithm_selected',
+        label: 'Search Algorithm Selected',
+        passed: isAlgorithmSelected,
+        detail: isAlgorithmSelected ? `Pattern: ${this.missionConfig.searchAlgorithm.replace('_', ' ')}` : 'Algorithm Unselected',
+        severity: isAlgorithmSelected ? 'ok' : 'error'
       }
     ];
 

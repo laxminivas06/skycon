@@ -293,7 +293,8 @@ const server = http.createServer((req, res) => {
     req.on('data', chunk => { body += chunk; });
     req.on('end', () => {
       try {
-        const heatmap = JSON.parse(body || '{}');
+        const raw = JSON.parse(body || '{}');
+        const heatmap = (raw && raw.heatmap && typeof raw.heatmap === 'object') ? raw.heatmap : raw;
         latestHeatmapData = { ...heatmap, serverTimestamp: Date.now() };
         saveJsonAtomic(HEATMAP_FILE, latestHeatmapData);
         

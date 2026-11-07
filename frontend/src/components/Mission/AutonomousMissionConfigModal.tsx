@@ -873,14 +873,14 @@ export const AutonomousMissionConfigModal: React.FC<AutonomousMissionConfigModal
           <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-black uppercase text-amber-300 tracking-wider">
-                5. PRE-FLIGHT MISSION VALIDATION CHECKLIST (9 CONDITIONS)
+                5. PRE-FLIGHT MISSION VALIDATION CHECKLIST ({validation.conditions.length} CONDITIONS)
               </span>
               <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
                 validation.isValid
                   ? 'bg-emerald-950/80 border-emerald-500/50 text-emerald-400'
                   : 'bg-rose-950/80 border-rose-500/50 text-rose-400'
               }`}>
-                {validation.isValid ? 'ALL 9 CHECKS SATISFIED' : 'CHECKS INCOMPLETE'}
+                {validation.isValid ? `ALL ${validation.conditions.length} CHECKS SATISFIED` : 'CHECKS INCOMPLETE'}
               </span>
             </div>
 
@@ -909,7 +909,7 @@ export const AutonomousMissionConfigModal: React.FC<AutonomousMissionConfigModal
 
             {!validation.isValid && (
               <p className="text-[11px] text-rose-400">
-                ⚠ START MISSION is disabled until all 9 checks pass. Ensure FC MAVLink connection, GPS 3D fix, Home reference lock, and valid search boundary.
+                ⚠ START MISSION is disabled until all {validation.conditions.length} checks pass. Ensure FC MAVLink connection, GPS 3D fix, Home reference lock, and that the drone is positioned inside the search boundary.
               </p>
             )}
           </div>
