@@ -38,6 +38,8 @@ import { MissionHistoryModal } from '../../components/History/MissionHistoryModa
 import { SerialDiagnosticsModal } from '../../components/Drone/SerialDiagnosticsModal';
 import { PhoneDroneDashboard } from '../../components/PhoneMission/PhoneDroneDashboard';
 import { FlightModeSelector } from '../../components/common/FlightModeSelector';
+import { GlobalErrorHUD } from '../../components/common/GlobalErrorHUD';
+import { systemAlertService } from '../../services/systemAlertService';
 import { AppRole } from '../../types/mission';
 
 interface DashboardPageProps {
@@ -434,6 +436,12 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       if (!started) {
         audioService.playBeep(300, 300, 'sawtooth');
         showNotification(`❌ Start Mission rejected: ${statusMsg}`);
+        systemAlertService.pushAlert({
+          title: 'MISSION START REJECTED',
+          message: statusMsg,
+          severity: 'CRITICAL',
+          source: 'GCS_MISSION'
+        });
         return;
       }
 
@@ -574,6 +582,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
 
   return (
     <div className="h-[100dvh] w-full bg-[var(--uav-bg)] text-[var(--uav-text)] flex flex-col font-sans select-none overflow-hidden">
+      <GlobalErrorHUD />
       {/* 1. Header (Fixed 68px) */}
       <Header
         telemetry={telemetry}

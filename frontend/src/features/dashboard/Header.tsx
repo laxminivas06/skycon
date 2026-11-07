@@ -439,13 +439,25 @@ export const Header: React.FC<HeaderProps> = ({
         </button>
 
         {/* Battery Percent & Voltage Pill */}
-        <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] border border-[var(--uav-card-border)] bg-[#161B22] text-[11px] font-mono">
-          <Battery className="w-3.5 h-3.5 text-[var(--uav-amber)]" />
-          <span className="text-[var(--uav-amber)] font-bold">
-            {telemetry.batteryPercent}%
+        <div className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] border text-[11px] font-mono transition-colors ${
+          telemetry.batteryVoltage <= 0
+            ? 'border-[var(--uav-card-border)] bg-[#161B22] text-slate-500'
+            : telemetry.batteryVoltage < 10.5
+            ? 'border-rose-500/70 bg-rose-950/60 text-rose-300 animate-pulse'
+            : telemetry.batteryPercent < 25
+            ? 'border-amber-500/70 bg-amber-950/60 text-amber-300'
+            : 'border-[var(--uav-card-border)] bg-[#161B22] text-emerald-400'
+        }`}>
+          <Battery className={`w-3.5 h-3.5 ${
+            telemetry.batteryVoltage <= 0 ? 'text-slate-500' :
+            telemetry.batteryVoltage < 10.5 ? 'text-rose-400' :
+            telemetry.batteryPercent < 25 ? 'text-amber-400' : 'text-emerald-400'
+          }`} />
+          <span className="font-bold">
+            {telemetry.batteryVoltage > 0 ? `${telemetry.batteryPercent}%` : '--%'}
           </span>
           <span className="text-[var(--uav-muted)]">
-            {telemetry.batteryVoltage.toFixed(1)}V
+            {telemetry.batteryVoltage > 0 ? `${telemetry.batteryVoltage.toFixed(1)}V` : 'NO SENSOR'}
           </span>
         </div>
 

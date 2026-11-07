@@ -335,7 +335,7 @@ export const GroundStationDashboard: React.FC<GroundStationDashboardProps> = ({
 
           <div className="flex items-center gap-1 bg-[#0d0e10] px-2 py-0.5 rounded border border-[#343537]/50">
             <span className="text-slate-400">BATT:</span>
-            <span className="text-[#57df85] font-bold">{telemetry.batteryPercent || 88}%</span>
+            <span className="text-[#57df85] font-bold">{telemetry.batteryVoltage > 0 ? `${telemetry.batteryPercent}%` : '--%'}</span>
           </div>
         </div>
 

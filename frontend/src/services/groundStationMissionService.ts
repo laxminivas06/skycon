@@ -4,6 +4,7 @@ import { missionEngine } from './missionEngine';
 import { mavlinkService, MavlinkMissionItem } from './mavlinkService';
 import { audioService } from './audioService';
 import { fetchWithFallback } from './apiClient';
+import { systemAlertService } from './systemAlertService';
 
 /**
  * Calculates Haversine distance in meters between two lat/lng coordinates.
@@ -1305,9 +1306,16 @@ export class GroundStationMissionService {
           if (geofenceService.getState().enabled) {
             const check = geofenceService.canArmVehicle(telem.latitude, telem.longitude);
             if (!check.canArm) {
+              const msg = check.reason || 'Your current position is outside the selected search boundary. Move the drone inside the boundary before starting the mission.';
+              systemAlertService.pushAlert({
+                title: 'PRE-ARM BOUNDARY INTERLOCK',
+                message: msg,
+                severity: 'CRITICAL',
+                source: 'GEOFENCE'
+              });
               return {
                 success: false,
-                message: check.reason || 'Start mission blocked: Drone is outside active Geofence boundary.'
+                message: msg
               };
             }
           }

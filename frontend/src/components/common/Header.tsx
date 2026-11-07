@@ -176,17 +176,33 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Battery Badge */}
         <div
           onClick={() => mavlinkService.requestMavlinkDataStreams()}
-          className="px-2 py-0.5 bg-[#1b1c1e] border border-[#343537] hover:border-[#57df85]/50 rounded text-slate-200 flex items-center gap-1.5 cursor-pointer transition"
-          title="Battery Monitor (Click to probe)"
+          className={`px-2 py-0.5 border rounded flex items-center gap-1.5 cursor-pointer transition ${
+            telemetry.batteryVoltage <= 0
+              ? 'bg-[#1b1c1e] border-[#343537] text-slate-500'
+              : telemetry.batteryVoltage < 10.5
+              ? 'bg-rose-950/70 border-rose-500/70 text-rose-300 animate-pulse'
+              : telemetry.batteryPercent < 25
+              ? 'bg-amber-950/60 border-amber-500/60 text-amber-300'
+              : 'bg-[#1b1c1e] border-[#343537] hover:border-[#57df85]/50 text-slate-200'
+          }`}
+          title="Battery Monitor (Click to probe data stream)"
         >
-          <span className={`material-symbols-outlined text-[15px] ${telemetry.batteryVoltage > 0 ? 'text-[#57df85]' : 'text-[#ffb95f]'}`}>
-            battery_charging_full
+          <span className={`material-symbols-outlined text-[15px] ${
+            telemetry.batteryVoltage <= 0 ? 'text-slate-500' :
+            telemetry.batteryVoltage < 10.5 ? 'text-rose-400' :
+            telemetry.batteryPercent < 25 ? 'text-amber-400' : 'text-[#57df85]'
+          }`}>
+            {telemetry.batteryVoltage <= 0 ? 'battery_unknown' : telemetry.batteryVoltage < 10.5 ? 'battery_alert' : 'battery_charging_full'}
           </span>
-          <span className="font-bold text-[#57df85]">
-            {telemetry.batteryPercent || 88}%
+          <span className={`font-bold ${
+            telemetry.batteryVoltage <= 0 ? 'text-slate-500' :
+            telemetry.batteryVoltage < 10.5 ? 'text-rose-400' :
+            telemetry.batteryPercent < 25 ? 'text-amber-400' : 'text-[#57df85]'
+          }`}>
+            {telemetry.batteryVoltage > 0 ? `${telemetry.batteryPercent}%` : '--%'}
           </span>
           <span className="text-slate-400 text-[10px] hidden sm:inline">
-            {(telemetry.batteryVoltage || 12.4).toFixed(1)}V
+            {telemetry.batteryVoltage > 0 ? `${telemetry.batteryVoltage.toFixed(1)}V` : 'NO SENSOR'}
           </span>
         </div>
 

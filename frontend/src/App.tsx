@@ -17,6 +17,7 @@ import { RunnerDashboard } from './components/Runner/RunnerDashboard';
 import { MultiRoleSimBench } from './components/Testbench/MultiRoleSimBench';
 import { MissionHistoryModal } from './components/History/MissionHistoryModal';
 import { QrAlertHUD } from './components/common/QrAlertHUD';
+import { GlobalErrorHUD } from './components/common/GlobalErrorHUD';
 
 export const App: React.FC = () => {
   const [session, setSession] = useState<UserSession | null>(authService.getSession());
@@ -148,6 +149,7 @@ export const App: React.FC = () => {
   if (currentRole === 'GROUND_STATION') {
     return (
       <div className="min-h-screen bg-sae-dark text-slate-100 flex flex-col font-sans select-none">
+        <GlobalErrorHUD />
         <QrAlertHUD />
         <div className="flex-1">
           <DashboardPage
@@ -163,6 +165,7 @@ export const App: React.FC = () => {
   if (currentRole === 'RUNNER') {
     return (
       <div className="min-h-screen bg-sae-dark text-slate-100 flex flex-col font-sans select-none">
+        <GlobalErrorHUD />
         <QrAlertHUD />
         {/* Dedicated Minimal Runner Top Bar */}
         <header className="h-[52px] px-3 sm:px-6 bg-[#0c1322] border-b border-slate-800 flex items-center justify-between select-none z-40 shadow-lg">
@@ -208,6 +211,7 @@ export const App: React.FC = () => {
   if (currentRole === 'DRONE') {
     return (
       <div className="h-[100dvh] w-full bg-sae-dark text-slate-100 flex flex-col font-sans select-none overflow-hidden">
+        <GlobalErrorHUD />
         <QrAlertHUD />
         {/* Dedicated Minimal Drone Core Top Bar (Matching Field Unit & GCS) */}
         <header className="h-[52px] px-3 sm:px-6 bg-[#0c1322] border-b border-slate-800 flex items-center justify-between select-none z-40 shadow-lg shrink-0">
@@ -291,6 +295,7 @@ export const App: React.FC = () => {
   return (
     <div className="min-h-screen bg-sae-dark text-slate-100 flex flex-col font-sans select-none">
       {/* Tactical Top App Header with Role Badge & Logout */}
+      <GlobalErrorHUD />
       <Header
         currentRole={currentRole}
         missionState={missionState}

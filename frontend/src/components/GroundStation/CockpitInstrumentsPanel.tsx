@@ -114,7 +114,7 @@ export const CockpitInstrumentsPanel: React.FC<CockpitInstrumentsPanelProps> = (
             <span className="text-slate-400 font-sans">Battery</span>
             <span className="flex items-center gap-1 text-[#22c55e] font-bold">
               <span className="material-symbols-outlined text-[13px]">battery_full</span>
-              <span>{telemetry.batteryPercent || 88}%</span>
+              <span>{telemetry.batteryVoltage > 0 ? `${telemetry.batteryPercent}%` : '--%'}</span>
             </span>
           </div>
         </div>

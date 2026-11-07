@@ -16,6 +16,7 @@ import { audioService } from './audioService';
 import { storageService } from './storageService';
 import { searchEngine } from './searchEngine';
 import { boxDetectionService } from './boxDetectionService';
+import { systemAlertService } from './systemAlertService';
 
 type MissionStateListener = (state: MissionState, elapsedSec: number, remainingSec: number) => void;
 type AuthorityListener = (authority: FlightCommandAuthority) => void;
@@ -1003,6 +1004,27 @@ class MissionEngine {
       if (!validation.isValid) {
         audioService.playBeep(300, 300, 'sawtooth');
         console.warn('Cannot start mission: Pre-flight validation failed', validation.errors);
+
+        // Highlight the specific failing check in Top Error Banner
+        const boundaryFail = validation.conditions.find(c => c.id === 'search_boundary_valid' && !c.passed);
+        if (boundaryFail) {
+          systemAlertService.pushAlert({
+            title: 'PRE-ARM BOUNDARY INTERLOCK',
+            message: boundaryFail.detail || 'Your current position is outside the selected search boundary. Move the drone inside the boundary before starting the mission.',
+            severity: 'CRITICAL',
+            source: 'GEOFENCE'
+          });
+        } else {
+          const firstErr = validation.conditions.find(c => !c.passed);
+          if (firstErr) {
+            systemAlertService.pushAlert({
+              title: `PRE-FLIGHT CHECK FAILED: ${firstErr.label.toUpperCase()}`,
+              message: firstErr.detail || `${firstErr.label} failed`,
+              severity: 'ERROR',
+              source: 'GCS_MISSION'
+            });
+          }
+        }
         return false;
       }
 
@@ -1010,6 +1032,12 @@ class MissionEngine {
       if (!safety.passed) {
         audioService.playBeep(300, 300, 'sawtooth');
         console.warn('Cannot start mission: Pre-arm safety check failed', safety.reason);
+        systemAlertService.pushAlert({
+          title: 'PRE-ARM SAFETY CHECK FAILED',
+          message: safety.reason || 'Pixhawk pre-arm check failed. Inspect sensor calibration, GPS 3D fix, or safety switch.',
+          severity: 'CRITICAL',
+          source: 'PIXHAWK'
+        });
         return false;
       }
     } else {

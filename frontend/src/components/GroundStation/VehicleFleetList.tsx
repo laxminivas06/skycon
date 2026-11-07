@@ -42,7 +42,7 @@ export const VehicleFleetList: React.FC<VehicleFleetListProps> = ({
       id: 'veh-1',
       name: 'Vehicle 1 (Rescue Core)',
       status: telemetry.isArmed ? 'ACTIVE' : 'STANDBY',
-      battery: telemetry.batteryPercent || 88,
+      battery: telemetry.batteryVoltage > 0 ? telemetry.batteryPercent : 0,
       alt: +(telemetry.altitude || 0).toFixed(1),
       speed: +(telemetry.groundSpeed || 0).toFixed(1),
       signal: 98,

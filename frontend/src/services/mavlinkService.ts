@@ -11,6 +11,7 @@ import {
 } from '../types/mavlink';
 import { usbHostService } from './usbHostService';
 import { transportManager } from './transports/TransportManager';
+import { systemAlertService } from './systemAlertService';
 
 type TelemetryListener = (telemetry: DroneTelemetry) => void;
 type MAVLinkPacketListener = (packet: MAVLinkPacket) => void;
@@ -905,11 +906,27 @@ class MAVLinkService {
     if (severityLevel <= 4 && (lower.includes('prearm') || lower.includes('fail') || lower.includes('bad') || lower.includes('inconsistent')) && !isPassingMsg && !isHealthyGpsReport) {
       this.connectionState.preArmChecksPassed = false;
       this.connectionState.preArmFailReason = text;
+
+      // Surface to Top Error Notification Banner
+      systemAlertService.pushAlert({
+        title: `PIXHAWK PRE-ARM: ${severity}`,
+        message: text.trim(),
+        severity: severityLevel <= 3 ? 'CRITICAL' : 'WARNING',
+        source: 'PIXHAWK'
+      });
     } else if (isPassingMsg || isHealthyGpsReport || lower.includes('armed')) {
       this.connectionState.preArmChecksPassed = true;
       if (this.connectionState.preArmFailReason && (isPassingMsg || isHealthyGpsReport)) {
         this.connectionState.preArmFailReason = undefined;
       }
+    } else if (severityLevel <= 3) {
+      // Any critical/error/emergency STATUSTEXT from Pixhawk
+      systemAlertService.pushAlert({
+        title: `PIXHAWK ${severity}`,
+        message: text.trim(),
+        severity: 'CRITICAL',
+        source: 'PIXHAWK'
+      });
     }
 
     this.notifyConnection();
@@ -1527,9 +1544,9 @@ class MAVLinkService {
             this.telemetry.batteryCurrent = +Math.max(0, currentA).toFixed(2);
 
             // Dynamically detect or refine cell count (default 3S for this drone)
-            if (voltageV > 20.0) {
+            if (voltageV > 18.0) {
               this.telemetry.batteryCellCount = 6;
-            } else if (voltageV > 13.2) {
+            } else if (voltageV > 13.0) {
               this.telemetry.batteryCellCount = 4;
             } else {
               this.telemetry.batteryCellCount = 3;
@@ -1539,6 +1556,15 @@ class MAVLinkService {
               this.telemetry.batteryPercent = batteryRemaining;
             } else if (voltageV > 0) {
               this.telemetry.batteryPercent = this.calculateLiPoPercentage(voltageV, this.telemetry.batteryCellCount);
+            }
+
+            if (voltageV < 10.5) {
+              systemAlertService.pushAlert({
+                title: 'LOW BATTERY FAILSAFE',
+                message: `Battery voltage is ${voltageV.toFixed(1)}V (${this.telemetry.batteryPercent}%). Below safe landing limit (10.5V)!`,
+                severity: 'CRITICAL',
+                source: 'BATTERY'
+              });
             }
           }
           this.notifyTelemetry();
@@ -1643,21 +1669,31 @@ class MAVLinkService {
         if (payload.length >= 12) {
           let totalVolts = 0;
           let activeCells = 0;
+          let isPerCell = false;
+
           for (let c = 0; c < 10; c++) {
             const cellOffset = 10 + c * 2;
             if (cellOffset + 2 <= payload.length) {
               const cellMv = view.getUint16(cellOffset, true);
               if (cellMv > 0 && cellMv < 65000) {
-                totalVolts += cellMv / 1000;
-                activeCells++;
+                if (cellMv > 5000) {
+                  // Standard Holybro/APM power module reports pack voltage in cell 0 (mV)
+                  totalVolts = cellMv / 1000;
+                  isPerCell = false;
+                  break;
+                } else {
+                  totalVolts += cellMv / 1000;
+                  activeCells++;
+                  isPerCell = true;
+                }
               }
             }
           }
 
-          if (activeCells > 0) {
+          if (isPerCell && activeCells > 1) {
             this.telemetry.batteryCellCount = activeCells;
           } else if (totalVolts > 0) {
-            this.telemetry.batteryCellCount = totalVolts > 20.0 ? 6 : totalVolts > 13.2 ? 4 : 3;
+            this.telemetry.batteryCellCount = totalVolts > 18.0 ? 6 : totalVolts > 13.0 ? 4 : 3;
           }
 
           if (totalVolts > 0) {
@@ -1681,6 +1717,17 @@ class MAVLinkService {
           } else if (this.telemetry.batteryVoltage > 0) {
             this.telemetry.batteryPercent = this.calculateLiPoPercentage(this.telemetry.batteryVoltage, this.telemetry.batteryCellCount);
           }
+
+          // Check for critical low battery threshold (< 10.5V for 3S)
+          if (this.telemetry.batteryVoltage > 0 && this.telemetry.batteryVoltage < 10.5) {
+            systemAlertService.pushAlert({
+              title: 'LOW BATTERY FAILSAFE',
+              message: `LiPo voltage is ${this.telemetry.batteryVoltage.toFixed(1)}V (${this.telemetry.batteryPercent}%). Below safe landing limit (10.5V)!`,
+              severity: 'CRITICAL',
+              source: 'BATTERY'
+            });
+          }
+
           this.notifyTelemetry();
         }
         break;
@@ -4632,39 +4679,46 @@ class MAVLinkService {
     this.currentWpIndex = 0;
   }
 
-  private calculateLiPoPercentage(voltage: number, cellCount?: number): number {
+  public calculateLiPoPercentage(voltage: number, cellCount?: number): number {
+    if (!voltage || voltage <= 0) return 0;
+
     let cells = cellCount;
-    if (!cells || cells <= 0) {
-      if (voltage > 20.0) cells = 6;
-      else if (voltage > 13.2) cells = 4;
-      else cells = 3; // Default 3S LiPo for this drone
+    if (!cells || cells <= 1) {
+      if (voltage > 18.0) cells = 6;
+      else if (voltage > 13.0) cells = 4;
+      else cells = 3; // Standard 3S LiPo for S500 drone
     }
 
-    const cellVolt = voltage / cells;
+    const cellVolt = +(voltage / cells).toFixed(3);
 
-    // Standard calibrated non-linear LiPo discharge curve per cell:
-    // 4.20V: 100%
-    // 4.05V: 90%
-    // 3.90V: 70%
-    // 3.82V: 50% (nominal storage)
-    // 3.75V: 25%
-    // 3.70V: 15% (low battery warning threshold)
-    // 3.50V: 5% (critical failsafe threshold)
-    // 3.30V: 0% (empty / cut-off)
-    if (cellVolt >= 4.20) return 100;
-    if (cellVolt <= 3.30) return 0;
+    // 12-point calibrated empirical non-linear LiPo discharge curve per cell
+    const curve: [number, number][] = [
+      [4.20, 100],
+      [4.15, 95],
+      [4.10, 88],
+      [4.00, 78],
+      [3.92, 65],
+      [3.85, 52],
+      [3.80, 40],
+      [3.75, 25],
+      [3.70, 15],
+      [3.60, 7],
+      [3.50, 3],
+      [3.30, 0]
+    ];
 
-    if (cellVolt >= 4.05) {
-      return Math.round(90 + ((cellVolt - 4.05) / 0.15) * 10);
-    } else if (cellVolt >= 3.82) {
-      return Math.round(50 + ((cellVolt - 3.82) / 0.23) * 40);
-    } else if (cellVolt >= 3.70) {
-      return Math.round(15 + ((cellVolt - 3.70) / 0.12) * 35);
-    } else if (cellVolt >= 3.50) {
-      return Math.round(5 + ((cellVolt - 3.50) / 0.20) * 10);
-    } else {
-      return Math.round(((cellVolt - 3.30) / 0.20) * 5);
+    if (cellVolt >= curve[0][0]) return 100;
+    if (cellVolt <= curve[curve.length - 1][0]) return 0;
+
+    for (let i = 0; i < curve.length - 1; i++) {
+      const [vHigh, pHigh] = curve[i];
+      const [vLow, pLow] = curve[i + 1];
+      if (cellVolt <= vHigh && cellVolt >= vLow) {
+        const factor = (cellVolt - vLow) / (vHigh - vLow);
+        return Math.round(pLow + factor * (pHigh - pLow));
+      }
     }
+    return 0;
   }
 
   private emitPacket(msgName: MAVLinkPacket['msgName'], payload: Record<string, any>) {

@@ -223,9 +223,11 @@ export const AutonomousMissionConfigModal: React.FC<AutonomousMissionConfigModal
   const handleStart = () => {
     handleSaveMission();
     missionEngine.setForceBypassChecks(forceBypassChecks);
-    missionEngine.startMission(forceBypassChecks);
-    onStartMission();
-    onClose();
+    const started = missionEngine.startMission(forceBypassChecks);
+    if (started) {
+      onStartMission();
+      onClose();
+    }
   };
 
   const handleExecuteLoiterTest = async () => {
