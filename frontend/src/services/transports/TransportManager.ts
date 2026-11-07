@@ -107,16 +107,44 @@ export class TransportManager {
     return this.activeTransport.disconnect();
   }
 
+  public getConnectedTransport(): MavlinkTransport | null {
+    if (this.activeTransport && this.activeTransport.isConnected()) {
+      return this.activeTransport;
+    }
+    for (const transport of this.transports.values()) {
+      if (transport.isConnected()) {
+        return transport;
+      }
+    }
+    return null;
+  }
+
   public isConnected(): boolean {
-    return this.activeTransport ? this.activeTransport.isConnected() : false;
+    return Boolean(this.getConnectedTransport());
   }
 
   public isReady(): boolean {
-    return this.activeTransport ? this.activeTransport.isReady() : false;
+    if (this.activeTransport && this.activeTransport.isReady()) {
+      return true;
+    }
+    for (const transport of this.transports.values()) {
+      if (transport.isReady()) {
+        return true;
+      }
+    }
+    return false;
   }
 
   public async send(data: Uint8Array): Promise<boolean> {
-    return this.activeTransport.send(data);
+    const target = this.getConnectedTransport() || this.activeTransport;
+    if (target) {
+      if (this.activeTransport !== target) {
+        this.activeTransport = target;
+        this.bindActiveTransport();
+      }
+      return target.send(data);
+    }
+    return false;
   }
 
   public async scanUsbDevices(): Promise<any[]> {

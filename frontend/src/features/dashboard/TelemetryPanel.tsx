@@ -89,8 +89,12 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
         setArmFeedback('Vehicle Armed — Motors spinning ✓');
         onNotification?.('Vehicle Armed — Motors spinning ✓');
       } else {
-        setArmFeedback('Arm rejected by Pixhawk. Check safety switch or use Force Arm.');
-        onNotification?.('Arm rejected by Pixhawk. Check safety switch, GPS 3D fix, and compass.');
+        const failReason = mavlinkService.getConnectionState().preArmFailReason;
+        const msg = failReason
+          ? `Arm rejected: ${failReason}`
+          : 'Arm rejected by Pixhawk. Check safety switch or use Force Arm.';
+        setArmFeedback(msg);
+        onNotification?.(msg);
       }
     } catch (err: any) {
       setArmFeedback(`Arm failed: ${err?.message || 'Check pre-arm conditions'}`);

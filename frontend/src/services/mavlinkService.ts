@@ -718,20 +718,20 @@ class MAVLinkService {
     this.connectionState.heartbeatHz = +(this.heartbeatTimestamps.length / 5.0).toFixed(1);
     this.connectionState.diagnostics.heartbeatHz = this.connectionState.heartbeatHz;
 
-    // Strict 3000ms loss threshold per Master UAV Specification
-    if (ageMs > 3000) {
+    // Heartbeat loss threshold: 5000ms (prevents false drops during wireless Wi-Fi / relay packet jitter)
+    if (ageMs > 5000) {
       this.connectionState.isConnected = false;
       this.connectionState.isReceivingTelemetry = false;
       this.connectionState.phase = 'CONNECTION_LOST';
-      this.connectionState.phaseMessage = 'MAVLink Connection Lost (No Heartbeat > 3s)';
+      this.connectionState.phaseMessage = 'MAVLink Connection Lost (No Heartbeat > 5s)';
       this.telemetry.gps.isLocked = false;
       this.telemetry.pixhawkConnected = false;
       this.telemetry.isArmed = false;
       this.connectionState.vehicleState = 'DISARMED';
       this.cancelPendingStreamRequests();
       this.stopHeartbeatWatchdog();
-      this.logDiagnostic('MAVLINK', '[MAVLINK] Heartbeat lost (> 3000ms since last packet)', 'warn');
-      this.addStatusMessage('WARNING', 4, 'MAVLink Connection Lost (No Heartbeat > 3s)');
+      this.logDiagnostic('MAVLINK', '[MAVLINK] Heartbeat lost (> 5000ms since last packet)', 'warn');
+      this.addStatusMessage('WARNING', 4, 'MAVLink Connection Lost (No Heartbeat > 5s)');
       this.notifyConnection();
       this.notifyTelemetry();
     } else {
@@ -2775,8 +2775,9 @@ class MAVLinkService {
           this.connectionState.vehicleState = 'DISARMED';
           this.telemetry.vehicleState = 'DISARMED';
           this.telemetry.isArmed = false;
-          const failReason = ack.statustext
-            ? `ARMING FAILED: ${ack.statustext}`
+          const rawReason = ack.statustext || this.connectionState.preArmFailReason;
+          const failReason = rawReason
+            ? `ARMING FAILED: ${this.explainPreArmFailure(rawReason)}`
             : `ARMING FAILED: ${ack.resultName || 'Command rejected'}`;
           this.connectionState.preArmFailReason = failReason;
           this.logDiagnostic('MAVLINK', `[ARM REJECTED] Pixhawk rejected arm: ${failReason}`, 'warn');
@@ -3052,6 +3053,11 @@ class MAVLinkService {
     } else {
       return true;
     }
+  }
+
+  public clearLastModeChangeError(): void {
+    this.connectionState.lastModeChangeError = undefined;
+    this.notifyConnection();
   }
 
   public async commandTakeoff(targetAltMeters: number = 5): Promise<boolean> {
@@ -4333,7 +4339,8 @@ class MAVLinkService {
       };
     }
 
-    if (!usbHostService.isReady() || !this.connectionState.isConnected) {
+    const isTransportOpen = this.isTransportConnected() || (this.connectionState.lastHeartbeat > 0 && Date.now() - this.connectionState.lastHeartbeat < 10000);
+    if (!isTransportOpen && this.connectionState.isRealHardware) {
       return {
         success: false,
         result: 4,
@@ -4451,7 +4458,8 @@ class MAVLinkService {
     const transportName = activeTransport ? activeTransport.name : 'No Transport';
     const prefix = command === 400 ? (param1 === 1.0 ? '[ARM]' : '[DISARM]') : `[CMD_${command}]`;
 
-    if (!usbHostService.isReady() && this.connectionState.connectionType !== 'SIMULATED') {
+    const isTransportOpen = this.isTransportConnected() || (this.connectionState.lastHeartbeat > 0 && Date.now() - this.connectionState.lastHeartbeat < 10000);
+    if (!isTransportOpen && this.connectionState.isRealHardware) {
       this.logDiagnostic(
         'MAVLINK',
         `${prefix} Suppressed sending command ${command} - transport ${transportName} is not ready/connected`,

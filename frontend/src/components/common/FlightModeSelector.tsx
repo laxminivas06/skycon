@@ -338,7 +338,10 @@ export const FlightModeSelector: React.FC<FlightModeSelectorProps> = ({
           </div>
           <button
             type="button"
-            onClick={() => setModeFeedback(null)}
+            onClick={() => {
+              setModeFeedback(null);
+              mavlinkService.clearLastModeChangeError();
+            }}
             className="text-slate-400 hover:text-white px-1.5 py-0.5 text-xs cursor-pointer"
           >
             ✕

@@ -103,3 +103,4 @@ if all_ok:
     print("✅ PHASE 1 COMPLETE: All critical Pixhawk parameters synchronized successfully!")
 else:
     print("⚠️ Phase 1 completed with notices (check parameters above).")
+
