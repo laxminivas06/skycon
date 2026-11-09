@@ -11,7 +11,8 @@ import {
   Wifi,
   Radio,
   CheckCircle2,
-  AlertTriangle
+  AlertTriangle,
+  Activity
 } from 'lucide-react';
 import { DashboardTelemetryData } from '../../hooks/useDashboardTelemetry';
 import { AppRole } from '../../types/mission';
@@ -32,6 +33,7 @@ interface HeaderProps {
   rcOverrideEnabled?: boolean;
   currentRole?: AppRole;
   onOpenPhoneMission?: () => void;
+  onOpenDiagnostics?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -47,6 +49,7 @@ export const Header: React.FC<HeaderProps> = ({
   rcOverrideEnabled = true,
   currentRole = 'GROUND_STATION',
   onOpenPhoneMission,
+  onOpenDiagnostics,
 }) => {
   const isArmed = telemetry.isArmed;
   const [connState, setConnState] = useState<GCSConnectionState>(() => gcsConnectionService.getState());
@@ -336,6 +339,17 @@ export const Header: React.FC<HeaderProps> = ({
               <span>BENCH SITL</span>
             </button>
           )}
+
+          {/* S500 Complete Pixhawk Diagnostic Audit Button */}
+          <button
+            type="button"
+            onClick={onOpenDiagnostics}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-[8px] border border-amber-500/50 bg-amber-950/40 hover:bg-amber-900/60 text-amber-300 text-[11px] font-mono font-bold transition shadow-sm cursor-pointer"
+            title="Open Complete S500 / Pixhawk 2.4.8 Diagnostic System (12 Subsystem Checks & 13 Core Answers)"
+          >
+            <Activity className="w-3.5 h-3.5 text-amber-400" />
+            <span>DIAGNOSTICS</span>
+          </button>
 
           {/* Indicator A: Wi-Fi / Network Status */}
           <div

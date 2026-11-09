@@ -36,6 +36,7 @@ import { FlightParams } from './FlightParams';
 import { AutonomousMissionConfigModal } from '../../components/Mission/AutonomousMissionConfigModal';
 import { MissionHistoryModal } from '../../components/History/MissionHistoryModal';
 import { SerialDiagnosticsModal } from '../../components/Drone/SerialDiagnosticsModal';
+import { ComprehensiveDiagnosticDashboard } from '../../components/Drone/ComprehensiveDiagnosticDashboard';
 import { PhoneDroneDashboard } from '../../components/PhoneMission/PhoneDroneDashboard';
 import { FlightModeSelector } from '../../components/common/FlightModeSelector';
 import { GlobalErrorHUD } from '../../components/common/GlobalErrorHUD';
@@ -259,6 +260,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   const [isConfigModalOpen, setIsConfigModalOpen] = useState<boolean>(false);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState<boolean>(false);
   const [isDiagnosticsModalOpen, setIsDiagnosticsModalOpen] = useState<boolean>(false);
+  const [isComprehensiveDiagOpen, setIsComprehensiveDiagOpen] = useState<boolean>(false);
   const [isFlightControlModalOpen, setIsFlightControlModalOpen] = useState<boolean>(false);
 
   const showNotification = (msg: string) => {
@@ -287,7 +289,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
     if (nav === 'Mission' || nav === 'Mission Plan') {
       setIsConfigModalOpen(true);
     } else if (nav === 'Diagnostics' || nav === 'Telemetry') {
-      setIsDiagnosticsModalOpen(true);
+      setIsComprehensiveDiagOpen(true);
     } else if (nav === 'Logs' || nav === 'Flight Logs') {
       setActiveTab('Logs');
     } else if (nav === 'Flight Control') {
@@ -603,6 +605,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         onToggleRC={handleToggleRC}
         rcOverrideEnabled={telemetry.rcOverrideEnabled}
         onOpenPhoneMission={() => setShowPhoneMissionModal(true)}
+        onOpenDiagnostics={() => setIsComprehensiveDiagOpen(true)}
       />
 
       {/* Alert Banners (Link Lost / Stale Heartbeat / Connecting) */}
@@ -972,6 +975,12 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           runnerLink={runnerCommService.getState()}
         />
       )}
+
+      {/* 8b. Comprehensive 12-Section Live Diagnostic System */}
+      <ComprehensiveDiagnosticDashboard
+        isOpen={isComprehensiveDiagOpen}
+        onClose={() => setIsComprehensiveDiagOpen(false)}
+      />
 
       {/* 9. Tactical Flight Control Modal */}
       {isFlightControlModalOpen && (

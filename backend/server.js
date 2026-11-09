@@ -2,6 +2,7 @@ import http from 'http';
 import https from 'https';
 import fs from 'fs';
 import path from 'path';
+import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { parse } from 'url';
@@ -159,6 +160,98 @@ const server = http.createServer((req, res) => {
       tcpNoDelay: true,
       perMessageDeflate: false
     }, null, 2));
+    return;
+  }
+
+  // S500 AUTONOMOUS DRONE: Complete Diagnostic Pipeline Execution
+  if (parsedUrl.pathname === '/api/diagnostics/run' && req.method === 'POST') {
+    const dataDir = path.resolve(__dirname, '../data');
+    if (!fs.existsSync(dataDir)) {
+      try { fs.mkdirSync(dataDir, { recursive: true }); } catch (e) {}
+    }
+    const reportPath = path.resolve(dataDir, 'diagnostic_report.json');
+    const csvPath = path.resolve(dataDir, 'diagnostic_report.csv');
+    const scriptPath = path.resolve(__dirname, 'diagnostic_engine.py');
+
+    console.log('[DIAGNOSTICS] Spawning S500 Diagnostic Engine...');
+    const pythonExe = process.platform === 'win32' ? 'python' : 'python3';
+    const proc = spawn(pythonExe, [scriptPath, '--output-json', reportPath, '--output-csv', csvPath]);
+    
+    let stderrData = '';
+    let stdoutData = '';
+    proc.stdout.on('data', (d) => { stdoutData += d.toString(); });
+    proc.stderr.on('data', (d) => { stderrData += d.toString(); });
+    
+    proc.on('close', (code) => {
+      console.log(`[DIAGNOSTICS] Engine finished with code ${code}`);
+      try {
+        if (fs.existsSync(reportPath)) {
+          const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+          res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'Cache-Control': 'no-cache, no-store'
+          });
+          res.end(JSON.stringify({ success: true, report }));
+          return;
+        }
+      } catch (e) {
+        console.error('[DIAGNOSTICS] Failed to read report:', e);
+      }
+      res.writeHead(500, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*'
+      });
+      res.end(JSON.stringify({ success: false, error: stderrData || 'Diagnostic run failed to generate output' }));
+    });
+    return;
+  }
+
+  // S500 AUTONOMOUS DRONE: Fetch Latest Diagnostic Report
+  if (parsedUrl.pathname === '/api/diagnostics/latest' && req.method === 'GET') {
+    const reportPath = path.resolve(__dirname, '../data/diagnostic_report.json');
+    if (fs.existsSync(reportPath)) {
+      try {
+        const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'no-cache, no-store'
+        });
+        res.end(JSON.stringify({ success: true, report }));
+        return;
+      } catch (e) {}
+    }
+    res.writeHead(404, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*'
+    });
+    res.end(JSON.stringify({ success: false, message: 'No diagnostic report generated yet. Press START COMPLETE DIAGNOSTICS.' }));
+    return;
+  }
+
+  // S500 AUTONOMOUS DRONE: Export Diagnostic Report (JSON or CSV)
+  if (parsedUrl.pathname === '/api/diagnostics/export' && req.method === 'GET') {
+    const format = (parsedUrl.query?.format || 'json').toLowerCase();
+    const filePath = format === 'csv'
+      ? path.resolve(__dirname, '../data/diagnostic_report.csv')
+      : path.resolve(__dirname, '../data/diagnostic_report.json');
+    
+    if (fs.existsSync(filePath)) {
+      const content = fs.readFileSync(filePath);
+      res.writeHead(200, {
+        'Content-Type': format === 'csv' ? 'text/csv' : 'application/json',
+        'Content-Disposition': `attachment; filename="s500_diagnostic_report.${format}"`,
+        'Access-Control-Allow-Origin': '*'
+      });
+      res.end(content);
+      return;
+    }
+    res.writeHead(404, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*'
+    });
+    res.end(JSON.stringify({ success: false, message: 'Export file not found. Run diagnostics first.' }));
     return;
   }
 

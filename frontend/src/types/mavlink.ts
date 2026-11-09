@@ -145,6 +145,8 @@ export interface PixhawkConnectionState {
   mavlinkVersion: string;
   isReceivingTelemetry: boolean;
   ekfHealthy: boolean;
+  ekfVariances?: { velocity: number; posHoriz: number; posVert: number; compass: number; terrainAlt?: number };
+  vibrationLevels?: { x: number; y: number; z: number; clipping: number };
   preArmChecksPassed: boolean;
   preArmFailReason?: string;
   latestStatusMessage?: PixhawkStatusMessage;

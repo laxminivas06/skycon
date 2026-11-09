@@ -2232,6 +2232,52 @@ class MAVLinkService {
         break;
       }
 
+      // EKF_STATUS_REPORT (msgId = 193)
+      case 193: {
+        if (payload.length >= 18) {
+          const flags = view.getUint16(0, true);
+          const velVar = view.getFloat32(2, true);
+          const posHorizVar = view.getFloat32(6, true);
+          const posVertVar = view.getFloat32(10, true);
+          const compassVar = view.getFloat32(14, true);
+          const terrainAltVar = payload.length >= 22 ? view.getFloat32(18, true) : undefined;
+
+          const isHealthy = velVar < 0.8 && posHorizVar < 0.8 && posVertVar < 0.8 && compassVar < 0.8;
+          this.telemetry.ekfHealthy = isHealthy;
+          this.connectionState.ekfHealthy = isHealthy;
+          this.connectionState.ekfVariances = {
+            velocity: +velVar.toFixed(3),
+            posHoriz: +posHorizVar.toFixed(3),
+            posVert: +posVertVar.toFixed(3),
+            compass: +compassVar.toFixed(3),
+            terrainAlt: terrainAltVar !== undefined ? +terrainAltVar.toFixed(3) : undefined
+          };
+          this.telemetry.ekfVariances = this.connectionState.ekfVariances;
+          this.notifyTelemetry();
+        }
+        break;
+      }
+
+      // VIBRATION (msgId = 241)
+      case 241: {
+        if (payload.length >= 32) {
+          const vx = view.getFloat32(8, true);
+          const vy = view.getFloat32(12, true);
+          const vz = view.getFloat32(16, true);
+          const clipping = view.getUint32(20, true) + view.getUint32(24, true) + view.getUint32(28, true);
+
+          this.connectionState.vibrationLevels = {
+            x: +vx.toFixed(2),
+            y: +vy.toFixed(2),
+            z: +vz.toFixed(2),
+            clipping
+          };
+          this.telemetry.vibrationLevels = this.connectionState.vibrationLevels;
+          this.notifyTelemetry();
+        }
+        break;
+      }
+
       // HOME_POSITION (msgId = 242)
       case 242: {
         if (payload.length >= 12) {
@@ -3171,28 +3217,41 @@ class MAVLinkService {
     return { success: true };
   }
 
-  public async uploadFencePolygon(vertices: Array<{ lat: number; lng?: number; lon?: number }>): Promise<{ success: boolean; count: number }> {
-    const isConnected = this.connectionState.isConnected || this.connectionState.isUsbConnected;
-    if (!vertices || vertices.length < 3) return { success: false, count: 0 };
-    this.logDiagnostic('MAVLINK', `Uploading fence polygon (${vertices.length} vertices) to Pixhawk via MAVLink`, 'info');
-    if (this.connectionState.isRealHardware && isConnected) {
-      for (let i = 0; i < vertices.length; i++) {
-        const v = vertices[i];
-        const lon = v.lng ?? (v as any).lon ?? 0;
-        await this.sendMavlinkCommandInt(
-          5001 /* MAV_CMD_NAV_FENCE_POLYGON_VERTEX_INCLUSION */,
-          vertices.length,
-          i,
-          0,
-          0,
-          v.lat,
-          lon,
-          0,
-          5 /* MAV_FRAME_GLOBAL_INT */
-        );
-      }
+  public async uploadFencePolygon(vertices: Array<{ lat: number; lng?: number; lon?: number }>): Promise<{ success: boolean; count: number; message: string }> {
+    const isConnected = this.isTransportConnected();
+    if (!vertices || vertices.length < 3) {
+      return { success: false, count: 0, message: 'Geofence polygon requires at least 3 vertices' };
     }
-    return { success: true, count: vertices.length };
+
+    this.logDiagnostic('MAVLINK', `Uploading fence polygon (${vertices.length} vertices) to Pixhawk via MAVLink Fence Mission Protocol (mission_type=1)`, 'info');
+
+    // Convert polygon vertices into MAVLink Fence Mission Items (MAV_CMD_NAV_FENCE_POLYGON_VERTEX_INCLUSION = 5001)
+    const fenceItems: MavlinkMissionItem[] = vertices.map((v, idx) => ({
+      seq: idx,
+      command: 5001 /* MAV_CMD_NAV_FENCE_POLYGON_VERTEX_INCLUSION */,
+      frame: 0 /* MAV_FRAME_GLOBAL */,
+      current: 0,
+      autocontinue: 0,
+      param1: vertices.length, // total vertex count in polygon
+      param2: 0,
+      param3: 0,
+      param4: 0,
+      lat: v.lat,
+      lon: v.lng ?? (v as any).lon ?? 0,
+      alt: 0,
+      mission_type: 1 /* MAV_MISSION_TYPE_FENCE */
+    }));
+
+    if (this.connectionState.isRealHardware && isConnected) {
+      const res = await this.uploadMissionWaypoints(fenceItems, true, undefined, 1 /* MAV_MISSION_TYPE_FENCE */);
+      return {
+        success: res.success,
+        count: res.success ? vertices.length : 0,
+        message: res.message
+      };
+    }
+
+    return { success: true, count: vertices.length, message: `Geofence stored in memory (${vertices.length} vertices)` };
   }
 
   /**
@@ -3707,7 +3766,8 @@ class MAVLinkService {
   public async uploadMissionWaypoints(
     items: Array<MavlinkMissionItem>,
     allowRetry: boolean = true,
-    onProgress?: (stage: string, current: number, total: number) => void
+    onProgress?: (stage: string, current: number, total: number) => void,
+    missionType: number = 0
   ): Promise<{ success: boolean; message: string; upload_id?: string }> {
     // 1. Concurrency guard: Serialize uploads
     if (this.missionUploadResolver !== null) {
@@ -3737,7 +3797,7 @@ class MAVLinkService {
       if (it.lat < -90 || it.lat > 90 || it.lon < -180 || it.lon > 180) {
         return { success: false, message: `Invalid waypoint at index ${i}: Latitude (${it.lat}) or Longitude (${it.lon}) out of WGS-84 bounds.` };
       }
-      if (it.alt < 1.0 || it.alt > 120.0) {
+      if (missionType === 0 && (it.alt < 1.0 || it.alt > 120.0)) {
         return { success: false, message: `Invalid waypoint at index ${i}: Altitude (${it.alt}m) outside safe limits [1.0m, 120.0m].` };
       }
     }
@@ -3932,7 +3992,7 @@ class MAVLinkService {
             view.setUint8(2, targetSys);
             view.setUint8(3, targetComp);
             if (isMav2) {
-              view.setUint8(4, 0 /* MAV_MISSION_TYPE_MISSION */);
+              view.setUint8(4, missionType /* 0 = MAV_MISSION_TYPE_MISSION, 1 = MAV_MISSION_TYPE_FENCE */);
             }
 
             const packet = isMav2
@@ -3942,9 +4002,10 @@ class MAVLinkService {
             await usbHostService.sendBytes(packet);
             this.connectionState.bytesSent += packet.length;
 
+            const missionLabel = missionType === 1 ? 'FENCE' : 'MISSION';
             this.logDiagnostic(
               'MAVLINK',
-              `[MAVLINK] TX MISSION_COUNT count=${items.length} target=${targetSys}/${targetComp} type=MISSION (Attempt ${countAttempts}/${maxCountAttempts})`,
+              `[MAVLINK] TX MISSION_COUNT count=${items.length} target=${targetSys}/${targetComp} type=${missionLabel} (Attempt ${countAttempts}/${maxCountAttempts})`,
               'info'
             );
             onProgress?.(`Announcing mission to Pixhawk (attempt ${countAttempts}/${maxCountAttempts})...`, 0, items.length);

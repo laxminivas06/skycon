@@ -151,6 +151,9 @@ export interface DroneTelemetry {
   batteryCellCount?: number;
   flightMode: string;
   isArmed: boolean;
+  ekfHealthy?: boolean;
+  ekfVariances?: { velocity: number; posHoriz: number; posVert: number; compass: number; terrainAlt?: number };
+  vibrationLevels?: { x: number; y: number; z: number; clipping: number };
   vehicleState?: 'ARMED' | 'DISARMED' | 'ARMING' | 'DISARMING' | 'UNKNOWN';
   controlMode?: 'RC' | 'NO_RC';
   rcSignalDetected?: boolean;
