@@ -53,3 +53,16 @@ The primary competition objective is:
 - **Frontend (Netlify)**: Located in `frontend/`. Deploys via `npm run build` with output in `frontend/dist`. Single-Page Application redirects managed via `netlify.toml` and `public/_redirects`.
 - **Backend (Render)**: Located in `backend/`. Deploys via `render.yaml` blueprint with health check at `/health` and WebSocket relay at `/ws`.
 
+---
+
+## 7. Token-Efficient Codebase Analysis (Graphify-First)
+To eliminate token waste and prevent context window exhaustion:
+- **Never dump large raw source files** into context just to understand code flow or search symbols.
+- **Always query graphify first**:
+  - Run `python -m graphify query "<question>" --budget 1000` to pinpoint exact node locations and line numbers.
+  - Trace connections with `python -m graphify path "Source" "Target"` and `python -m graphify explain "Node"`.
+  - Consult `graphify-out/GRAPH_REPORT.md` and `graphify-out/wiki/index.md` for architecture and community structure.
+- **Surgical line reads only**: Once graphify locates the target, use `read_file` with narrow line bounds (`StartLine`/`EndLine`, max 30–60 lines).
+- **Keep graph synchronized**: Run `python -m graphify update .` after code edits (AST-only, 0 LLM cost).
+
+
