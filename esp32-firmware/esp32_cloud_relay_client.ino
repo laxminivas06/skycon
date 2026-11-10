@@ -76,8 +76,8 @@ __attribute__((constructor)) static void disable_bod_early_boot() {
 const char* WIFI_SSID     = "drone123";
 const char* WIFI_PASSWORD = "drone@123";
 
-const char* FALLBACK_SSID = "";
-const char* FALLBACK_PASS = "";
+const char* FALLBACK_SSID = "IDEALABS-1";
+const char* FALLBACK_PASS = "SphnCollege";
 
 // =====================================================================================
 // 2. CLOUD RELAY WSS CONFIGURATION
@@ -417,7 +417,21 @@ void connectToWiFi(bool isInitialSetup = false) {
   if (isInitialSetup) {
     bool found = scanForTargetNetwork(activeSSID, targetChannel);
     if (!found) {
-      Serial.printf("⚠️ [WIFI NOTE] '%s' not seen in pre-scan. Attempting direct broadcast connect...\n", activeSSID);
+      if (strlen(FALLBACK_SSID) > 0 && !usingFallback) {
+        Serial.printf("⚠️ [WIFI NOTE] '%s' not in the air. Checking visible fallback '%s'...\n", activeSSID, FALLBACK_SSID);
+        int32_t fallbackChan = 0;
+        if (scanForTargetNetwork(FALLBACK_SSID, fallbackChan)) {
+          Serial.printf("🎯 [WIFI] Fast-switching to visible fallback network '%s'!\n", FALLBACK_SSID);
+          usingFallback = true;
+          activeSSID = FALLBACK_SSID;
+          activePass = FALLBACK_PASS;
+          targetChannel = fallbackChan;
+          found = true;
+        }
+      }
+      if (!found) {
+        Serial.printf("⚠️ [WIFI NOTE] '%s' not seen in pre-scan. Attempting direct broadcast connect...\n", activeSSID);
+      }
     }
   }
 
@@ -466,7 +480,7 @@ void handleWiFiMaintenance() {
 
   updateLED(1);
 
-  if (millis() - wifiConnectionStartTime > 20000) {
+  if (millis() - wifiConnectionStartTime > 12000) {
     wifiConnectionStartTime = millis();
     wifiAttemptCount++;
     Serial.printf("\n⚠️ [WIFI RETRY] Re-attempting Wi-Fi connection (Attempt #%d)...\n", wifiAttemptCount);

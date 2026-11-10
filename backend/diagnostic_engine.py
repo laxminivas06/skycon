@@ -1090,3 +1090,4 @@ if __name__ == "__main__":
     print(f"\n📁 Reports exported:")
     print(f"   • JSON: {os.path.abspath(json_path)}")
     print(f"   • CSV:  {os.path.abspath(csv_path)}")
+

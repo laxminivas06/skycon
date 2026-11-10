@@ -1,0 +1,88 @@
+#NOTE: S500 QUADCOPTER / PIXHAWK 2.4.8 (ARDUCOPTER V4.7.2 - PIXHAWK1-1M-BDSHOT)
+#NOTE: MASTER AUTONOMOUS TUNING & HARDWARE PARAMETER FILE
+#NOTE: Designed for 5.0m AGL Autonomous Flight, Hardware Geofencing, Instant Braking, High-Speed Telemetry
+#NOTE: Compatible with Mission Planner "Load from file" -> "Write Params"
+
+# ==============================================================================
+# SECTION 1: 5.0M ALTITUDE LOCK & TAKEOFF / RTL ENVELOPE (FIXES 10M OVERRIDE)
+# ==============================================================================
+PILOT_TKOFF_ALT,500
+RTL_ALT,500
+RTL_ALT_FINAL,0
+RTL_CLIMB_MIN,0
+WPNAV_RADIUS,150
+WPNAV_SPEED,400
+WPNAV_SPEED_UP,250
+WPNAV_SPEED_DN,150
+WP_YAW_BEHAVIOR,0
+LAND_SPEED,40
+
+# ==============================================================================
+# SECTION 2: HARDWARE GEOFENCE CONFIGURATION (SAE INDIA ADDC 50M ARENA)
+# ==============================================================================
+FENCE_ENABLE,1
+FENCE_TYPE,7
+FENCE_ACTION,1
+FENCE_ALT_MAX,18.0
+FENCE_ALT_MIN,0.0
+FENCE_MARGIN,2.0
+FENCE_RADIUS,50.0
+
+# ==============================================================================
+# SECTION 3: INSTANT BRAKING & TARGET CENTERING (ZERO OVERSHOOT OVER QR CODE)
+# ==============================================================================
+LOIT_BRK_DELAY,0.3
+LOIT_BRK_ACCEL,350
+LOIT_BRK_JERK,1000
+PSC_POSXY_P,1.3
+PSC_POSZ_P,1.2
+MOT_HOVER_LEARN,2
+ANGLE_MAX,2200
+
+# ==============================================================================
+# SECTION 4: GPS MULTI-CONSTELLATION & EKF3 TUNING (SUB-METER HDOP & RAPID LOCK)
+# ==============================================================================
+GPS_GNSS_MODE,65
+GPS_RATE_MS,200
+GPS_HDOP_GOOD,200
+EK3_POSNE_M_NSE,0.3
+EK3_VELNE_M_NSE,0.3
+AHRS_EKF_TYPE,3
+
+# ==============================================================================
+# SECTION 5: HIGH-SPEED SERIAL PORT MAPPING & TELEMETRY STREAM RATES
+# ==============================================================================
+SERIAL1_PROTOCOL,2
+SERIAL1_BAUD,921
+SERIAL2_PROTOCOL,2
+SERIAL2_BAUD,57
+SERIAL2_OPTIONS,0
+BRD_SER2_RTSCTS,0
+SR2_POSITION,5
+SR2_EXTRA1,10
+SR2_EXTRA2,4
+SR2_EXTRA3,2
+SR2_RAW_SENS,2
+SR2_EXT_STAT,2
+SR2_RC_CHAN,2
+
+# ==============================================================================
+# SECTION 6: SAFETY SWITCH, MOTOR DYNAMICS & AUTO-DISARM DELAY
+# ==============================================================================
+BRD_SAFETY_DEFLT,0
+DISARM_DELAY,10
+FRAME_CLASS,1
+FRAME_TYPE,1
+MOT_SPIN_ARM,0.12
+MOT_SPIN_MIN,0.15
+
+# ==============================================================================
+# SECTION 7: FAILSAFES & POWER MODULE BATTERY MONITORING
+# ==============================================================================
+# FS_GCS_ENABLE: 2 = Enabled in AUTO/GUIDED only (Prevents "PreArm: GCS failsafe on" on ground/bench!)
+FS_GCS_ENABLE,2
+FS_THR_ENABLE,1
+FS_BATT_ENABLE,1
+BATT_MONITOR,4
+BATT_LOW_VOLT,10.5
+BATT_CRT_VOLT,10.0

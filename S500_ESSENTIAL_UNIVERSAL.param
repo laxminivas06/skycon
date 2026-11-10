@@ -1,0 +1,41 @@
+#NOTE: S500 QUADCOPTER / PIXHAWK 2.4.8 (UNIVERSAL CORE PARAMETERS)
+#NOTE: 100% Compatible with Pixhawk1-1M and fmuv3 firmware without any missing parameter warnings.
+#NOTE: In Mission Planner: "Load from file" -> "Write Params"
+
+# 1. 5.0m Takeoff & Cruise Altitudes (Fixes 10m Override)
+PILOT_TKOFF_ALT,500
+RTL_ALT,500
+RTL_ALT_FINAL,0
+WPNAV_RADIUS,150
+WPNAV_SPEED,400
+WPNAV_SPEED_UP,250
+WP_YAW_BEHAVIOR,0
+LAND_SPEED,40
+
+# 2. Hardware Geofence Configuration
+FENCE_ENABLE,1
+FENCE_TYPE,7
+FENCE_ACTION,1
+FENCE_ALT_MAX,18.0
+
+# 3. High-Speed Serial Port Mapping & Telemetry Streams (TELEM2 for ESP32)
+SERIAL1_PROTOCOL,2
+SERIAL1_BAUD,921
+SERIAL2_PROTOCOL,2
+SERIAL2_BAUD,57
+SERIAL2_OPTIONS,0
+BRD_SER2_RTSCTS,0
+SR2_POSITION,5
+SR2_EXTRA1,10
+SR2_EXT_STAT,2
+
+# 4. Airframe & Safety Configuration
+FRAME_CLASS,1
+FRAME_TYPE,1
+DISARM_DELAY,10
+
+# 5. Failsafes & Battery Monitoring (FS_GCS_ENABLE: 2 = AUTO/GUIDED only)
+FS_GCS_ENABLE,2
+FS_THR_ENABLE,1
+BATT_MONITOR,4
+
