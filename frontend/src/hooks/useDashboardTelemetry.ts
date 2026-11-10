@@ -94,13 +94,13 @@ export const useDashboardTelemetry = (): DashboardTelemetryData => {
       setElapsedSeconds(elapsed);
     });
 
-    // Deterministic watchdog for stale heartbeat (> 2000ms) and link lost (> 3000ms per MAVLink spec)
+    // Cloud-resilient watchdog for stale heartbeat (> 4000ms) and link lost (> 8000ms for WSS relay transit)
     const watchdog = setInterval(() => {
       const state = mavlinkService.getConnectionState();
       if ((state.isConnected || state.isUsbConnected || state.isReceivingTelemetry) && state.lastHeartbeat > 0) {
         const age = Date.now() - state.lastHeartbeat;
-        setIsStale(age > 2000);
-        setIsLinkLost(age > 3000 || !state.isConnected);
+        setIsStale(age > 4000);
+        setIsLinkLost(age > 8000 || !state.isConnected);
       } else {
         setIsStale(false);
         setIsLinkLost(!state.isConnected && state.phase !== 'CONNECTING');

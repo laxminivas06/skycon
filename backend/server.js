@@ -667,6 +667,7 @@ const server = http.createServer((req, res) => {
   // AERORECON: Clear Detections
   if (parsedUrl.pathname === '/api/recon/detections' && req.method === 'DELETE') {
     reconDetections = [];
+    latestQrAlert = null;
     saveJsonAtomic(DETECTIONS_FILE, reconDetections);
     res.writeHead(200, {
       'Content-Type': 'application/json',
@@ -1454,6 +1455,14 @@ function handleBrowserConnection(ws) {
       try {
         const text = data.toString();
         const msg = JSON.parse(text);
+
+        // Keepalive heartbeat ping from browser
+        if (msg.type === 'PING') {
+          try {
+            ws.send(JSON.stringify({ type: 'PONG', timestamp: Date.now() }), noop);
+          } catch (e) {}
+          return;
+        }
 
         // Command dispatch request via WebSocket
         if (msg.type === 'COMMAND_REQUEST' || msg.command) {

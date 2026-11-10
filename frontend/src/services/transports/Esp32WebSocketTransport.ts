@@ -99,6 +99,7 @@ export class Esp32WebSocketTransport implements MavlinkTransport {
   private readonly maxReconnectAttempts: number = 50;
   private reconnectTimer: any = null;
   private connectTimeoutTimer: any = null;
+  private keepAliveTimer: any = null;
 
   // Cumulative Metrics
   private cumulativeRxBytes: number = 0;
@@ -673,6 +674,7 @@ export class Esp32WebSocketTransport implements MavlinkTransport {
         socket.onopen = () => {
           if (wakeUpTimer) clearTimeout(wakeUpTimer);
           this.clearAllTimers();
+          this.startKeepAlive();
           this.isConnecting = false;
           this.reconnectAttempts = 0;
           this.currentProtocol = protocolToTry;
@@ -978,6 +980,26 @@ export class Esp32WebSocketTransport implements MavlinkTransport {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    if (this.keepAliveTimer) {
+      clearInterval(this.keepAliveTimer);
+      this.keepAliveTimer = null;
+    }
+  }
+
+  private startKeepAlive() {
+    if (this.keepAliveTimer) {
+      clearInterval(this.keepAliveTimer);
+      this.keepAliveTimer = null;
+    }
+    this.keepAliveTimer = setInterval(() => {
+      if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+        try {
+          this.socket.send(JSON.stringify({ type: 'PING', timestamp: Date.now() }));
+        } catch (e) {
+          // ignore
+        }
+      }
+    }, 5000);
   }
 
   public isConnected(): boolean {

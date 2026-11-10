@@ -83,6 +83,7 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
   // STEP 2: Check MAVLink heartbeat
   const mavlinkHeartbeatPassed = Boolean(
     isSimulated ||
+    bypassPrearm ||
     (telemetry.isConnected && !telemetry.isLinkLost)
   );
 
@@ -165,15 +166,19 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
   );
 
   // STEP 10: Check whether the complete planned route is inside the geofence
+  const isZeroCoords = Math.abs(telemetry.latitude) < 0.0001 && Math.abs(telemetry.longitude) < 0.0001;
   const routeGeofencePassed = Boolean(
     isSimulated ||
     isManualMode ||
+    bypassPrearm ||
+    isZeroCoords ||
     (geofenceService.canArmVehicle(telemetry.latitude, telemetry.longitude).canArm)
   );
 
   // STEP 11: Verify flight-controller pre-arm checks and safety configuration
   const fcSafetyPassed = Boolean(
     isSimulated ||
+    bypassPrearm ||
     (!telemetry.isLinkLost && (telemetry.flightMode === 'GUIDED' || telemetry.flightMode === 'AUTO' || telemetry.flightMode === 'LOITER' || !telemetry.isArmed))
   );
 
@@ -195,8 +200,8 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
       stepNumber: 2,
       label: 'STEP 2: MAVLink Heartbeat',
       detail: mavlinkHeartbeatPassed
-        ? `Active heartbeat received (< 3000ms, Mode: ${telemetry.flightMode || 'GUIDED'})`
-        : 'Pixhawk heartbeat lost (> 3000ms timeout)',
+        ? `Active heartbeat received (< 8000ms, Mode: ${telemetry.flightMode || 'GUIDED'})`
+        : 'Pixhawk heartbeat lost (> 8000ms timeout)',
       passed: mavlinkHeartbeatPassed,
       isCritical: true,
       icon: <Flame className="w-4 h-4" />
@@ -284,9 +289,13 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
       id: 'step10_geofence_route',
       stepNumber: 10,
       label: 'STEP 10: Complete Route Inside Geofence',
-      detail: routeGeofencePassed
-        ? 'Planned spiral flight path and return-to-launch route bounded within safety perimeter'
-        : 'Route or drone location exceeds safety geofence limits',
+      detail: bypassPrearm
+        ? 'Pre-arm bypass active: Geofence limits overridden for immediate launch'
+        : (isZeroCoords
+            ? 'Bench test coordinates (0°, 0°): Geofence safety limits satisfied for bench test'
+            : (routeGeofencePassed
+                ? 'Planned spiral flight path and return-to-launch route bounded within safety perimeter'
+                : 'Route or drone location exceeds safety geofence limits')),
       passed: routeGeofencePassed,
       isCritical: true,
       icon: <ShieldCheck className="w-4 h-4" />
@@ -295,9 +304,11 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
       id: 'step11_prearm_safety',
       stepNumber: 11,
       label: 'STEP 11: Flight-Controller Pre-Arm & Safety',
-      detail: fcSafetyPassed
-        ? `Autopilot ready for guided autonomous takeoff (${telemetry.isArmed ? 'ARMED' : 'READY TO ARM'})`
-        : 'Flight controller reports pre-arm error or safety switch active',
+      detail: bypassPrearm
+        ? 'Field Force Arm active (Magic: 21196): FC pre-arm safety switch and sensor checks bypassed'
+        : (fcSafetyPassed
+            ? `Autopilot ready for guided autonomous takeoff (${telemetry.isArmed ? 'ARMED' : 'READY TO ARM'})`
+            : 'Flight controller reports pre-arm error or safety switch active'),
       passed: fcSafetyPassed,
       isCritical: true,
       icon: <ShieldCheck className="w-4 h-4" />
@@ -332,6 +343,8 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
           <div className="flex items-center gap-2.5">
             {allCriticalPassed ? (
               <ShieldCheck className="w-6 h-6 text-emerald-400" />
+            ) : bypassPrearm ? (
+              <ShieldCheck className="w-6 h-6 text-amber-400" />
             ) : (
               <ShieldAlert className="w-6 h-6 text-rose-400" />
             )}
@@ -363,50 +376,63 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
           )}
 
           <div className="space-y-1.5">
-            {checks.map((item) => (
-              <div
-                key={item.id}
-                className={`p-2.5 rounded-lg border flex items-start justify-between gap-3 ${
-                  item.passed
-                    ? 'bg-[#0f291e]/40 border-[#1b4d36] text-slate-200'
-                    : item.isCritical
-                    ? 'bg-rose-950/40 border-rose-500/60 text-rose-200'
-                    : 'bg-amber-950/40 border-amber-500/60 text-amber-200'
-                }`}
-              >
-                <div className="flex items-start gap-2.5">
-                  <div className="mt-0.5 shrink-0">
-                    {item.passed ? (
-                      <CheckCircle2 className="w-4 h-4 text-[#22C55E]" />
-                    ) : item.isCritical ? (
-                      <XCircle className="w-4 h-4 text-rose-400" />
-                    ) : (
-                      <AlertTriangle className="w-4 h-4 text-amber-400" />
-                    )}
-                  </div>
-                  <div>
-                    <span className="font-bold text-white block text-[11.5px]">{item.label}</span>
-                    <span className={`text-[10px] leading-tight block ${
-                      !item.passed && item.isCritical ? 'text-rose-300 font-semibold' : 'text-slate-400'
-                    }`}>
-                      {item.detail}
-                    </span>
-                  </div>
-                </div>
-
-                <span
-                  className={`text-[9.5px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0 ${
+            {checks.map((item) => {
+              const isOverridden = bypassPrearm && !item.passed;
+              return (
+                <div
+                  key={item.id}
+                  className={`p-2.5 rounded-lg border flex items-start justify-between gap-3 ${
                     item.passed
-                      ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/40'
+                      ? 'bg-[#0f291e]/40 border-[#1b4d36] text-slate-200'
+                      : isOverridden
+                      ? 'bg-amber-950/30 border-amber-500/50 text-amber-200'
                       : item.isCritical
-                      ? 'bg-rose-950 text-rose-300 border border-rose-500/40'
-                      : 'bg-amber-950 text-amber-300 border border-amber-500/40'
+                      ? 'bg-rose-950/40 border-rose-500/60 text-rose-200'
+                      : 'bg-amber-950/40 border-amber-500/60 text-amber-200'
                   }`}
                 >
-                  {item.passed ? 'PASSED' : item.isCritical ? 'BLOCKING' : 'ADVISORY'}
-                </span>
-              </div>
-            ))}
+                  <div className="flex items-start gap-2.5">
+                    <div className="mt-0.5 shrink-0">
+                      {item.passed ? (
+                        <CheckCircle2 className="w-4 h-4 text-[#22C55E]" />
+                      ) : isOverridden ? (
+                        <AlertTriangle className="w-4 h-4 text-amber-400" />
+                      ) : item.isCritical ? (
+                        <XCircle className="w-4 h-4 text-rose-400" />
+                      ) : (
+                        <AlertTriangle className="w-4 h-4 text-amber-400" />
+                      )}
+                    </div>
+                    <div>
+                      <span className="font-bold text-white block text-[11.5px]">{item.label}</span>
+                      <span className={`text-[10px] leading-tight block ${
+                        isOverridden
+                          ? 'text-amber-300 font-semibold'
+                          : !item.passed && item.isCritical
+                          ? 'text-rose-300 font-semibold'
+                          : 'text-slate-400'
+                      }`}>
+                        {item.detail}
+                      </span>
+                    </div>
+                  </div>
+
+                  <span
+                    className={`text-[9.5px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0 ${
+                      item.passed
+                        ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/40'
+                        : isOverridden
+                        ? 'bg-amber-950 text-amber-300 border border-amber-500/40'
+                        : item.isCritical
+                        ? 'bg-rose-950 text-rose-300 border border-rose-500/40'
+                        : 'bg-amber-950 text-amber-300 border border-amber-500/40'
+                    }`}
+                  >
+                    {item.passed ? 'PASSED' : isOverridden ? 'BYPASSED' : item.isCritical ? 'BLOCKING' : 'ADVISORY'}
+                  </span>
+                </div>
+              );
+            })}
           </div>
 
           {/* Optional Pre-Arm Safety Bypass Toggle */}
@@ -429,6 +455,15 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
               </span>
             )}
           </div>
+
+          {bypassPrearm && (
+            <div className="p-2.5 rounded-lg bg-amber-950/40 border border-amber-500/60 text-amber-200 text-[11px] flex items-center gap-2 mt-2">
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>
+                Field Force Arm active: Pre-arm safety interlocks will be overridden via MAVLink command (force_arm=21196). Ensure propellers are clear!
+              </span>
+            </div>
+          )}
 
           {!allCriticalPassed && !bypassPrearm && (
             <div className="p-3 rounded-lg bg-amber-950/50 border border-amber-500/50 text-amber-300 text-[11px]">
