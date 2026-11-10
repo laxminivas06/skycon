@@ -2,6 +2,9 @@ import React, { useState } from 'react';
 import { PixhawkConnectionState, PixhawkStatusMessage, MAVLinkCommandAck } from '../../types/mavlink';
 import { DroneTelemetry, HomePoint } from '../../types/mission';
 import { mavlinkService } from '../../services/mavlinkService';
+import { UsbPowerSagAlert } from './UsbPowerSagAlert';
+import { DiagnosticTranslator } from './DiagnosticTranslator';
+export { UsbPowerSagAlert, DiagnosticTranslator };
 import {
   ShieldCheck,
   AlertTriangle,
@@ -321,6 +324,17 @@ export const PreArmChecksPanel: React.FC<PreArmChecksPanelProps> = ({
       {/* ========================================================================= */}
       {/* EXPLICIT METRIC COUNTERS (SECTION 6: REPLACES MISLEADING "0 ERRORS")      */}
       {/* ========================================================================= */}
+      <UsbPowerSagAlert voltageV={telemetry.batteryVoltage} />
+
+      {/* STATUSTEXT Pre-Arm Diagnostic Translator & Force Arm 21196 Button */}
+      <DiagnosticTranslator
+        statusMessages={connectionState.statusHistory}
+        latestMessage={connectionState.latestStatusMessage?.text}
+        preArmFailReason={connectionState.preArmFailReason}
+        isArmed={telemetry.isArmed}
+        onForceArm={() => mavlinkService.sendArmCommand(true)}
+      />
+
       <div className="grid grid-cols-3 gap-2 text-[10px]">
         <div className={`p-2 rounded-xl border flex flex-col justify-between ${preArmFailuresCount > 0
             ? 'bg-rose-950/40 border-rose-500/60 text-rose-300'

@@ -7,6 +7,35 @@ import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { parse } from 'url';
 
+import atomicStore, {
+  saveJsonAtomic,
+  loadJsonSafe,
+  persistDetection,
+  logTelemetry,
+  queryDetections,
+  computeSha256,
+  verifyOrAttachChecksum
+} from './atomic_store.js';
+
+import {
+  MavlinkMultiplexer,
+  COPTER_MODES,
+  MODE_NAME_TO_INT,
+  MAV_RESULT
+} from './mavlink_multiplexer.js';
+
+import { CommandDispatcher } from './command_dispatcher.js';
+import { ProfileManager } from './profile_manager.js';
+
+// Global Process Crash Immunity Guards (Prevents Render "Exited with status 1" crashes)
+process.on('uncaughtException', (err) => {
+  console.error('[CRITICAL] Uncaught exception intercepted (Server crash prevented):', err?.stack || err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[CRITICAL] Unhandled promise rejection intercepted (Server crash prevented):', reason);
+});
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -79,28 +108,6 @@ const OBJECTS_FILE = path.join(DATA_DIR, 'objects.json');
 let latestHeatmapData = loadJsonSafe(HEATMAP_FILE, null);
 let objectRegistry = loadJsonSafe(OBJECTS_FILE, []);
 
-function loadJsonSafe(filePath, fallback) {
-  try {
-    if (fs.existsSync(filePath)) {
-      const data = fs.readFileSync(filePath, 'utf8');
-      return JSON.parse(data);
-    }
-  } catch (err) {
-    console.warn(`[PERSISTENCE] Error loading ${filePath}:`, err.message);
-  }
-  return fallback;
-}
-
-function saveJsonAtomic(filePath, data) {
-  try {
-    const tmp = `${filePath}.tmp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
-    fs.renameSync(tmp, filePath);
-  } catch (err) {
-    console.error(`[PERSISTENCE] Error saving ${filePath}:`, err.message);
-  }
-}
-
 // In-Memory caches backed by durable disk storage
 let missions = loadJsonSafe(MISSIONS_FILE, []);
 const MAX_RECON_DETECTIONS = 50;
@@ -123,7 +130,98 @@ function getActiveMission() {
   return missions.find(m => (m.status === 'EXECUTING' || m.status === 'ACTIVE') && (!m.deadline || Date.now() < m.deadline)) || null;
 }
 
-// Create HTTP server for health checks, static frontend, and WebSocket upgrades
+// ----------------------------------------------------------------------------
+// Initialize MAVLink Multiplexer, Command Dispatcher & Profile Manager
+// ----------------------------------------------------------------------------
+
+const sendToDroneBinary = (packetBuffer) => {
+  if (!connectorSocket || connectorSocket.readyState !== WebSocket.OPEN) {
+    throw new Error('Drone / ESP32 is offline on cloud relay');
+  }
+  connectorSocket.send(packetBuffer, { binary: true, mask: false }, noop);
+};
+
+const mavlinkMux = new MavlinkMultiplexer({
+  historyLimit: 1000,
+  onCommandAck: (ack) => {
+    commandDispatcher.handleAck(ack);
+  },
+  onTelemetryFrame: (frame) => {
+    // Log frame to WAL-mode SQLite
+    logTelemetry(frame);
+
+    // Broadcast demultiplexed telemetry frame to connected browsers
+    if (browserSockets.size > 0) {
+      const jsonStr = JSON.stringify(frame);
+      for (const browser of browserSockets) {
+        if (browser.readyState === WebSocket.OPEN && browser.bufferedAmount < 65536) {
+          try {
+            browser.send(jsonStr, noop);
+          } catch (e) {}
+        }
+      }
+    }
+  },
+  onStatusText: (statusTextEntry) => {
+    if (browserSockets.size > 0) {
+      const msg = JSON.stringify({
+        type: 'STATUSTEXT',
+        ...statusTextEntry
+      });
+      for (const browser of browserSockets) {
+        if (browser.readyState === WebSocket.OPEN) {
+          try {
+            browser.send(msg, noop);
+          } catch (e) {}
+        }
+      }
+    }
+  },
+  onMissionEvent: (msgId, buf, pOffset, pLen, direction) => {
+    // Retain full mission tracking compatibility with Section 5 E2E tests
+    if (msgId === 44) {
+      const count = buf.readUInt16LE(pOffset);
+      if (direction === 'TX' && currentUploadJob.status === 'UPLOADING') {
+        currentUploadJob.itemCount = count;
+      }
+    } else if (msgId === 40 || msgId === 51) {
+      const reqSeq = buf.readUInt16LE(pOffset);
+      if (currentUploadJob.status === 'UPLOADING') {
+        currentUploadJob.lastSeqRequested = reqSeq;
+      }
+    } else if (msgId === 47) {
+      const ackResult = buf[pOffset + 2];
+      if (direction === 'RX' && currentUploadJob.status === 'UPLOADING') {
+        currentUploadJob.lastAckResult = ackResult;
+        currentUploadJob.durationMs = Date.now() - currentUploadJob.startTime;
+        if (ackResult === 0) {
+          currentUploadJob.status = 'SUCCESS';
+          console.log(`[MISSION] upload_id=${currentUploadJob.upload_id} SUCCESS duration=${(currentUploadJob.durationMs / 1000).toFixed(2)}s`);
+        } else {
+          currentUploadJob.status = 'FAILED';
+          currentUploadJob.errorMessage = `MISSION_ACK rejected: code ${ackResult}`;
+          console.warn(`[MISSION] upload_id=${currentUploadJob.upload_id} FAILED: code ${ackResult}`);
+        }
+      }
+    }
+  }
+});
+
+const commandDispatcher = new CommandDispatcher({
+  sendFn: sendToDroneBinary,
+  getStatusTextsFn: (windowMs) => mavlinkMux.getRecentStatusTexts(windowMs),
+  timeoutMs: 2000,
+  retries: 1
+});
+
+const profileManager = new ProfileManager({
+  initialProfile: 'FIELD',
+  sendFn: sendToDroneBinary
+});
+
+// ----------------------------------------------------------------------------
+// HTTP Server & REST Endpoints
+// ----------------------------------------------------------------------------
 const server = http.createServer((req, res) => {
   const parsedUrl = parse(req.url, true);
 
@@ -131,13 +229,14 @@ const server = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-relay-token'
     });
     res.end();
     return;
   }
   
+  // 1. Health Probe
   if (parsedUrl.pathname === '/health') {
     res.writeHead(200, {
       'Content-Type': 'application/json',
@@ -158,12 +257,197 @@ const server = http.createServer((req, res) => {
       lastPacketAgeMs: Date.now() - lastPacketTime,
       currentUploadJob,
       tcpNoDelay: true,
-      perMessageDeflate: false
+      perMessageDeflate: false,
+      activeProfile: profileManager.activeProfile,
+      telemetry: mavlinkMux.getState()
     }, null, 2));
     return;
   }
 
-  // S500 AUTONOMOUS DRONE: Complete Diagnostic Pipeline Execution
+  // 2. Telemetry History (Last 1000 frames)
+  if (parsedUrl.pathname === '/api/telemetry/history' && req.method === 'GET') {
+    const limit = Math.min(1000, Math.max(1, parseInt(parsedUrl.query?.limit, 10) || 1000));
+    const history = mavlinkMux.getHistory(limit);
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-cache, no-store'
+    });
+    res.end(JSON.stringify({
+      success: true,
+      count: history.length,
+      history
+    }));
+    return;
+  }
+
+  // 3. Parameter Profile Swapper (BENCH vs FIELD)
+  if (parsedUrl.pathname === '/api/params/profile') {
+    if (req.method === 'POST') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', async () => {
+        try {
+          const payload = JSON.parse(body || '{}');
+          const profile = payload.profile || 'FIELD';
+          const sync = Boolean(payload.sync);
+          const result = await profileManager.applyProfile(profile, { syncToDrone: sync });
+
+          // Broadcast profile change to connected browsers
+          const broadcastMsg = JSON.stringify({
+            type: 'PARAM_PROFILE_CHANGED',
+            profile: result.profile,
+            keyOverrides: result.keyOverrides,
+            appliedAt: result.appliedAt
+          });
+          for (const browser of browserSockets) {
+            if (browser.readyState === WebSocket.OPEN) {
+              try { browser.send(broadcastMsg, noop); } catch (e) {}
+            }
+          }
+
+          res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+          });
+          res.end(JSON.stringify(result));
+        } catch (err) {
+          res.writeHead(400, {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+          });
+          res.end(JSON.stringify({ success: false, error: err.message }));
+        }
+      });
+      return;
+    }
+
+    if (req.method === 'GET') {
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'no-cache, no-store'
+      });
+      res.end(JSON.stringify({
+        success: true,
+        ...profileManager.getStatus(),
+        readbackValidation: profileManager.validateReadback()
+      }));
+      return;
+    }
+  }
+
+  // 4. Command Uplink REST Endpoints (Non-Blocking Handshake Correlator)
+  if (parsedUrl.pathname === '/api/command/arm' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const force = Boolean(payload.force);
+        const result = await commandDispatcher.arm(force);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        const status = err.message.includes('offline') ? 503 : 400;
+        res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          success: false,
+          error: err.message,
+          code: err.code || 'COMMAND_FAILED'
+        }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/command/mode' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const mode = payload.mode || 'LOITER';
+        const result = await commandDispatcher.setMode(mode);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        const status = err.message.includes('offline') ? 503 : 400;
+        res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          success: false,
+          error: err.message,
+          code: err.code || 'COMMAND_FAILED'
+        }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/command/takeoff' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const altitude = Number(payload.altitude) || 5.0;
+        const result = await commandDispatcher.takeoff(altitude);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        const status = err.message.includes('offline') ? 503 : 400;
+        res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          success: false,
+          error: err.message,
+          code: err.code || 'COMMAND_FAILED'
+        }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/command' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const cmdName = String(payload.command || '').toUpperCase();
+        let result;
+
+        if (cmdName === 'ARM') {
+          result = await commandDispatcher.arm(Boolean(payload.force));
+        } else if (cmdName === 'DISARM') {
+          result = await commandDispatcher.disarm(Boolean(payload.force));
+        } else if (cmdName === 'SET_MODE') {
+          result = await commandDispatcher.setMode(payload.mode || 'LOITER');
+        } else if (cmdName === 'TAKEOFF') {
+          result = await commandDispatcher.takeoff(Number(payload.altitude) || 5.0);
+        } else {
+          const cmdId = parseInt(payload.command, 10);
+          if (isNaN(cmdId)) {
+            throw new Error(`Invalid command parameter: ${payload.command}`);
+          }
+          result = await commandDispatcher.dispatch(cmdId, payload.params || {});
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        const status = err.message.includes('offline') ? 503 : 400;
+        res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          success: false,
+          error: err.message,
+          code: err.code || 'COMMAND_FAILED'
+        }));
+      }
+    });
+    return;
+  }
+
+  // 5. Diagnostics Pipeline Execution
   if (parsedUrl.pathname === '/api/diagnostics/run' && req.method === 'POST') {
     const dataDir = path.resolve(__dirname, '../data');
     if (!fs.existsSync(dataDir)) {
@@ -181,8 +465,20 @@ const server = http.createServer((req, res) => {
     let stdoutData = '';
     proc.stdout.on('data', (d) => { stdoutData += d.toString(); });
     proc.stderr.on('data', (d) => { stderrData += d.toString(); });
+
+    proc.on('error', (err) => {
+      console.error('[DIAGNOSTICS] Failed to spawn diagnostic process:', err.message);
+      if (!res.headersSent) {
+        res.writeHead(500, {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*'
+        });
+        res.end(JSON.stringify({ success: false, error: `Process execution error: ${err.message}` }));
+      }
+    });
     
     proc.on('close', (code) => {
+      if (res.headersSent) return;
       console.log(`[DIAGNOSTICS] Engine finished with code ${code}`);
       try {
         if (fs.existsSync(reportPath)) {
@@ -207,7 +503,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // S500 AUTONOMOUS DRONE: Fetch Latest Diagnostic Report
+  // Diagnostics: Latest Report
   if (parsedUrl.pathname === '/api/diagnostics/latest' && req.method === 'GET') {
     const reportPath = path.resolve(__dirname, '../data/diagnostic_report.json');
     if (fs.existsSync(reportPath)) {
@@ -230,13 +526,13 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // S500 AUTONOMOUS DRONE: Export Diagnostic Report (JSON or CSV)
+  // Diagnostics: Export
   if (parsedUrl.pathname === '/api/diagnostics/export' && req.method === 'GET') {
     const format = (parsedUrl.query?.format || 'json').toLowerCase();
     const filePath = format === 'csv'
       ? path.resolve(__dirname, '../data/diagnostic_report.csv')
       : path.resolve(__dirname, '../data/diagnostic_report.json');
-    
+
     if (fs.existsSync(filePath)) {
       const content = fs.readFileSync(filePath);
       res.writeHead(200, {
@@ -255,9 +551,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-
-
-  // AERORECON: Ingest New QR Detection Record (with Deduplication & Atomic Persistence)
+  // 6. AERORECON: Ingest New QR Detection Record (with SHA-256 Validation, Deduplication & Atomic Persistence)
   if (parsedUrl.pathname === '/api/recon/detections' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => { body += chunk; });
@@ -269,7 +563,10 @@ const server = http.createServer((req, res) => {
         }
         detection.serverReceivedTime = Date.now();
 
-        // Idempotency & Deduplication check:
+        // Check or generate cryptographic SHA-256 checksum
+        verifyOrAttachChecksum(detection);
+
+        // Idempotency & Deduplication check
         let isDuplicate = false;
         const existingIdx = reconDetections.findIndex(d => d.detectionId === detection.detectionId);
         if (existingIdx !== -1) {
@@ -284,13 +581,11 @@ const server = http.createServer((req, res) => {
           );
           if (duplicateRecent) {
             isDuplicate = true;
-          } else {
-            reconDetections = [detection, ...reconDetections.slice(0, MAX_RECON_DETECTIONS - 1)];
           }
         }
 
-        // Persist to disk atomically
-        saveJsonAtomic(DETECTIONS_FILE, reconDetections);
+        // Persist atomically to disk (.tmp + renameSync) and SQLite WAL database
+        persistDetection(detection, reconDetections, MAX_RECON_DETECTIONS);
 
         // Broadcast to all connected GCS browsers & Runner units (only for non-duplicate events)
         if (!isDuplicate) {
@@ -329,7 +624,8 @@ const server = http.createServer((req, res) => {
           success: true, 
           detectionId: detection.detectionId, 
           count: reconDetections.length,
-          duplicate: isDuplicate
+          duplicate: isDuplicate,
+          checksumSha256: detection.checksumSha256
         }));
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
@@ -380,37 +676,26 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // AERORECON: Ingest Real-Time Heatmap Grid
+  // 7. Heatmap & Vision Object Registries
   if (parsedUrl.pathname === '/api/vision/heatmap' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => { body += chunk; });
     req.on('end', () => {
       try {
-        const raw = JSON.parse(body || '{}');
-        const heatmap = (raw && raw.heatmap && typeof raw.heatmap === 'object') ? raw.heatmap : raw;
-        latestHeatmapData = { ...heatmap, serverTimestamp: Date.now() };
+        const heatmap = JSON.parse(body || '{}');
+        heatmap.updatedAt = Date.now();
+        latestHeatmapData = heatmap;
         saveJsonAtomic(HEATMAP_FILE, latestHeatmapData);
-        
-        const broadcastMsg = JSON.stringify({
-          type: 'HEATMAP_UPDATE_EVENT',
-          heatmap: latestHeatmapData
-        });
-        for (const browser of browserSockets) {
-          if (browser.readyState === WebSocket.OPEN) {
-            try { browser.send(broadcastMsg, noop); } catch (e) {}
-          }
-        }
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: true, timestamp: latestHeatmapData.serverTimestamp }));
+        res.end(JSON.stringify({ success: true, pointsCount: heatmap.points ? heatmap.points.length : 0 }));
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: false, error: 'Invalid heatmap JSON payload' }));
+        res.end(JSON.stringify({ success: false, error: 'Invalid heatmap JSON' }));
       }
     });
     return;
   }
 
-  // AERORECON: Query Latest Heatmap Grid
   if (parsedUrl.pathname === '/api/vision/heatmap' && req.method === 'GET') {
     res.writeHead(200, {
       'Content-Type': 'application/json',
@@ -419,54 +704,30 @@ const server = http.createServer((req, res) => {
     });
     res.end(JSON.stringify({
       success: true,
-      heatmap: latestHeatmapData
+      heatmap: latestHeatmapData || { bounds: null, points: [], resolution: 1.0, updatedAt: 0 }
     }));
     return;
   }
 
-  // AERORECON: Ingest or Update Object Detection Registry
   if (parsedUrl.pathname === '/api/vision/objects' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => { body += chunk; });
     req.on('end', () => {
       try {
         const payload = JSON.parse(body || '{}');
-        const objectsList = Array.isArray(payload) ? payload : (payload.objects || [payload]);
-        
-        for (const obj of objectsList) {
-          if (!obj.object_id && !obj.objectId) continue;
-          const id = obj.object_id || obj.objectId;
-          const existingIdx = objectRegistry.findIndex(o => (o.object_id || o.objectId) === id);
-          if (existingIdx !== -1) {
-            objectRegistry[existingIdx] = { ...objectRegistry[existingIdx], ...obj, last_updated: Date.now() };
-          } else {
-            objectRegistry.push({ ...obj, registered_at: Date.now() });
-          }
-        }
-        
+        const objects = Array.isArray(payload.objects) ? payload.objects : [payload];
+        objectRegistry = objects.slice(0, 100);
         saveJsonAtomic(OBJECTS_FILE, objectRegistry);
-
-        const broadcastMsg = JSON.stringify({
-          type: 'OBJECT_QUEUE_UPDATE',
-          objects: objectRegistry,
-          timestamp: Date.now()
-        });
-        for (const browser of browserSockets) {
-          if (browser.readyState === WebSocket.OPEN) {
-            try { browser.send(broadcastMsg, noop); } catch (e) {}
-          }
-        }
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({ success: true, count: objectRegistry.length }));
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: false, error: 'Invalid object JSON payload' }));
+        res.end(JSON.stringify({ success: false, error: 'Invalid objects JSON' }));
       }
     });
     return;
   }
 
-  // AERORECON: Query Object Detection Registry
   if (parsedUrl.pathname === '/api/vision/objects' && req.method === 'GET') {
     res.writeHead(200, {
       'Content-Type': 'application/json',
@@ -481,7 +742,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // AERORECON: Plan Spiral Route & Calculate 5-Minute Feasibility
+  // 8. Plan Spiral Route
   if (parsedUrl.pathname === '/api/vision/plan-spiral' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => { body += chunk; });
@@ -589,7 +850,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // AERORECON: Create or Update Mission Record (Persisted in missions.json)
+  // 9. Missions CRUD & Active Mission Synchronization
   if (parsedUrl.pathname === '/api/missions' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => { body += chunk; });
@@ -603,8 +864,8 @@ const server = http.createServer((req, res) => {
 
         const missionRecord = {
           missionId,
-          mode: payload.mode || 'AUTONOMOUS', // MANUAL | AUTONOMOUS
-          algorithm: payload.algorithm || 'TANGENTIAL_CIRCULAR', // TANGENTIAL_CIRCULAR | SPIRAL | MANUAL_PATH
+          mode: payload.mode || 'AUTONOMOUS',
+          algorithm: payload.algorithm || 'TANGENTIAL_CIRCULAR',
           searchCenter: payload.searchCenter || null,
           searchRadiusMeters: Number(payload.searchRadiusMeters) || 10,
           plannedAltitudeMeters: Number(payload.plannedAltitudeMeters) || 10,
@@ -612,10 +873,10 @@ const server = http.createServer((req, res) => {
           startTime,
           deadline,
           waypoints: payload.waypoints || [],
-          status: payload.status || 'PLANNED', // PLANNED | EXECUTING | COMPLETED | DEADLINE_REACHED | ABORTED
+          status: payload.status || 'PLANNED',
           abortReason: payload.abortReason || null,
-          rtlStatus: payload.rtlStatus || 'IDLE', // IDLE | RETURN_REQUESTED | RETURNING | HOME_REACHED
-          terminalStatus: payload.terminalStatus || 'IN_FLIGHT', // IN_FLIGHT | LANDED | TERMINATED
+          rtlStatus: payload.rtlStatus || 'IDLE',
+          terminalStatus: payload.terminalStatus || 'IN_FLIGHT',
           lastUpdated: Date.now()
         };
 
@@ -623,7 +884,6 @@ const server = http.createServer((req, res) => {
         if (existingIdx !== -1) {
           missions[existingIdx] = { ...missions[existingIdx], ...missionRecord };
         } else {
-          // If a new active mission is started, mark previous executing missions as aborted
           if (missionRecord.status === 'EXECUTING') {
             missions.forEach(m => {
               if (m.status === 'EXECUTING') m.status = 'ABORTED';
@@ -634,7 +894,6 @@ const server = http.createServer((req, res) => {
 
         saveJsonAtomic(MISSIONS_FILE, missions);
 
-        // Broadcast mission update to all connected clients
         const broadcastMsg = JSON.stringify({
           type: 'MISSION_STATUS_EVENT',
           mission: missionRecord,
@@ -656,7 +915,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // AERORECON: Query Active Mission (Survives GCS Page Refresh)
   if (parsedUrl.pathname === '/api/missions/active' && req.method === 'GET') {
     const active = getActiveMission();
     res.writeHead(200, {
@@ -688,7 +946,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // AERORECON: Delete / Clear Active Mission
   if (parsedUrl.pathname === '/api/missions/active' && req.method === 'DELETE') {
     let clearedCount = 0;
     missions.forEach(m => {
@@ -710,7 +967,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // AERORECON: Update Active Mission Mode (MANUAL <-> AUTONOMOUS)
   if ((parsedUrl.pathname === '/api/missions/active/mode' || parsedUrl.pathname === '/api/missions/mode') && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => { body += chunk; });
@@ -737,7 +993,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // AERORECON: Query Mission History
   if (parsedUrl.pathname === '/api/missions' && req.method === 'GET') {
     res.writeHead(200, {
       'Content-Type': 'application/json',
@@ -752,7 +1007,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Mission Upload Job Initiation Endpoint
+  // 10. Mission Upload Job Initiation Endpoint
   if (parsedUrl.pathname === '/mission/upload' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => { body += chunk; });
@@ -792,7 +1047,6 @@ const server = http.createServer((req, res) => {
 
         console.log(`[MISSION] upload_id=${upload_id} requested items=${items.length}`);
 
-        // Broadcast mission job start to all connected browsers
         const jobAnnounce = JSON.stringify({
           type: 'MISSION_JOB_START',
           upload_id,
@@ -837,7 +1091,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // If frontend dist is available, serve static files (SPA fallback to index.html for GET/HEAD only)
+  // 11. Static Frontend Hosting & SPA Fallback
   if (DIST_PATH && (req.method === 'GET' || req.method === 'HEAD')) {
     let reqPath = parsedUrl.pathname || '/';
     let safePath = path.normalize(reqPath).replace(/^(\.\.[\/\\])+/, '');
@@ -879,7 +1133,8 @@ const server = http.createServer((req, res) => {
       esp32Online,
       esp32LastError,
       browserClientsCount: browserSockets.size,
-      uploadJob: currentUploadJob
+      uploadJob: currentUploadJob,
+      activeProfile: profileManager.activeProfile
     }, null, 2));
     return;
   }
@@ -888,12 +1143,12 @@ const server = http.createServer((req, res) => {
   res.end('Not Found');
 });
 
-// Create WebSocket server attached to HTTP server:
-// 1. perMessageDeflate: false -> CRITICAL: Eliminates zlib compression overhead and 15-50ms compression latency
-// 2. maxPayload: 64KB -> Sufficient for MAVLink batches without unbounded memory allocation
+// ----------------------------------------------------------------------------
+// WebSocket Server & Transports Tuning (TCP_NODELAY & perMessageDeflate: false)
+// ----------------------------------------------------------------------------
 const wss = new WebSocketServer({
   noServer: true,
-  perMessageDeflate: false,
+  perMessageDeflate: false, // 0ms compression latency
   maxPayload: 64 * 1024
 });
 
@@ -920,7 +1175,6 @@ function broadcastStatusToBrowsers() {
 server.on('upgrade', (request, socket, head) => {
   // CRITICAL LOW-LATENCY OPTIMIZATION:
   // Disable Nagle's algorithm immediately on raw TCP stream.
-  // Prevents OS TCP buffer from delaying small 14-280 byte MAVLink packets for 40-200ms!
   socket.setNoDelay(true);
   socket.setKeepAlive(true, 10000);
   socket.setTimeout(0);
@@ -953,7 +1207,6 @@ server.on('upgrade', (request, socket, head) => {
     if (!validateAuth('ESP32/connector')) return;
 
     wss.handleUpgrade(request, socket, head, (ws) => {
-      // Re-assert TCP_NODELAY on the underlying upgraded socket
       if (ws._socket) {
         ws._socket.setNoDelay(true);
         ws._socket.setKeepAlive(true, 10000);
@@ -980,125 +1233,6 @@ server.on('upgrade', (request, socket, head) => {
   socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
   socket.destroy();
 });
-
-// Lightweight MAVLink Frame Inspector for Structured Logging (Section 3 requirement)
-function inspectMavlinkPacket(buf, direction) {
-  if (!buf || buf.length < 8) return;
-  let offset = 0;
-  while (offset + 8 <= buf.length) {
-    const magic = buf[offset];
-    let msgId = -1;
-    let sysId = -1;
-    let compId = -1;
-    let payloadOffset = 0;
-    let packetLen = 0;
-
-    if (magic === 0xFE && offset + 8 <= buf.length) {
-      // MAVLink 1.0: header 6 bytes, payload len at buf[offset + 1], checksum 2 bytes
-      const payloadLen = buf[offset + 1];
-      packetLen = payloadLen + 8;
-      if (offset + packetLen > buf.length) break;
-      sysId = buf[offset + 3];
-      compId = buf[offset + 4];
-      msgId = buf[offset + 5];
-      payloadOffset = offset + 6;
-    } else if (magic === 0xFD && offset + 12 <= buf.length) {
-      // MAVLink 2.0: header 10 bytes, payload len at buf[offset + 1], checksum 2 bytes + optional signature
-      const payloadLen = buf[offset + 1];
-      const flags = buf[offset + 2];
-      const sigLen = (flags & 0x01) ? 13 : 0;
-      packetLen = payloadLen + 12 + sigLen;
-      if (offset + packetLen > buf.length) break;
-      sysId = buf[offset + 5];
-      compId = buf[offset + 6];
-      msgId = buf[offset + 7] | (buf[offset + 8] << 8) | (buf[offset + 9] << 16);
-      payloadOffset = offset + 10;
-    } else {
-      offset++;
-      continue;
-    }
-
-    // Inspect mission-relevant frames
-    if (msgId === 0) {
-      // HEARTBEAT
-      if (direction === 'RX') {
-        const customMode = buf.readUInt32LE ? buf.readUInt32LE(payloadOffset) : 0;
-        // throttle logging to 1 every 5 seconds to prevent spamming
-        if (Date.now() - lastHeartbeatLogTime > 5000) {
-          lastHeartbeatLogTime = Date.now();
-          console.log(`[MAVLINK] RX HEARTBEAT sys=${sysId} comp=${compId} mode=${customMode}`);
-        }
-      }
-    } else if (msgId === 44) {
-      // MISSION_COUNT
-      const count = buf.readUInt16LE ? buf.readUInt16LE(payloadOffset) : 0;
-      const targetSys = buf[payloadOffset + 2] || 1;
-      const targetComp = buf[payloadOffset + 3] || 1;
-      if (direction === 'TX') {
-        console.log(`[MAVLINK] TX MISSION_COUNT count=${count} target=${targetSys}/${targetComp} type=MISSION`);
-        if (currentUploadJob.status === 'UPLOADING') {
-          currentUploadJob.itemCount = count;
-        }
-      } else {
-        console.log(`[MAVLINK] RX MISSION_COUNT count=${count} sys=${sysId} comp=${compId}`);
-      }
-    } else if (msgId === 40 || msgId === 51) {
-      // MISSION_REQUEST (40) or MISSION_REQUEST_INT (51)
-      const reqSeq = buf.readUInt16LE ? buf.readUInt16LE(payloadOffset) : 0;
-      const name = msgId === 51 ? 'MISSION_REQUEST_INT' : 'MISSION_REQUEST';
-      console.log(`[MAVLINK] RX ${name} seq=${reqSeq}`);
-      if (currentUploadJob.status === 'UPLOADING') {
-        currentUploadJob.lastSeqRequested = reqSeq;
-      }
-    } else if (msgId === 39 || msgId === 73) {
-      // MISSION_ITEM (39) or MISSION_ITEM_INT (73)
-      const seq = buf.readUInt16LE ? buf.readUInt16LE(payloadOffset + 28) : 0;
-      const cmd = buf.readUInt16LE ? buf.readUInt16LE(payloadOffset + 30) : 0;
-      const frame = buf[payloadOffset + 34];
-      const name = msgId === 73 ? 'MISSION_ITEM_INT' : 'MISSION_ITEM';
-      console.log(`[MAVLINK] ${direction} ${name} seq=${seq} cmd=${cmd} frame=${frame}`);
-    } else if (msgId === 47) {
-      // MISSION_ACK (47)
-      const ackResult = buf[payloadOffset + 2];
-      const ackNames = {
-        0: 'ACCEPTED(0)',
-        1: 'ERROR(1)',
-        2: 'UNSUPPORTED_FRAME(2)',
-        3: 'UNSUPPORTED(3)',
-        4: 'NO_SPACE(4)',
-        5: 'INVALID(5)',
-        6: 'INVALID_PARAM1(6)',
-        7: 'INVALID_PARAM2(7)',
-        8: 'INVALID_PARAM3(8)',
-        9: 'INVALID_PARAM4(9)',
-        10: 'INVALID_PARAM5(10)',
-        11: 'INVALID_PARAM6(11)',
-        12: 'INVALID_PARAM7(12)',
-        13: 'INVALID_SEQUENCE(13)',
-        14: 'DENIED(14)',
-        15: 'CANCELLED(15)'
-      };
-      const resStr = ackNames[ackResult] || `CODE_${ackResult}`;
-      console.log(`[MAVLINK] ${direction} MISSION_ACK result=${resStr}`);
-      if (direction === 'RX' && currentUploadJob.status === 'UPLOADING') {
-        currentUploadJob.lastAckResult = ackResult;
-        currentUploadJob.durationMs = Date.now() - currentUploadJob.startTime;
-        if (ackResult === 0) {
-          currentUploadJob.status = 'SUCCESS';
-          console.log(`[MISSION] upload_id=${currentUploadJob.upload_id} SUCCESS duration=${(currentUploadJob.durationMs / 1000).toFixed(2)}s`);
-        } else {
-          currentUploadJob.status = 'FAILED';
-          currentUploadJob.errorMessage = `MISSION_ACK rejected: ${resStr}`;
-          console.warn(`[MISSION] upload_id=${currentUploadJob.upload_id} FAILED: ${resStr}`);
-        }
-      }
-    }
-
-    offset += packetLen;
-  }
-}
-
-let lastHeartbeatLogTime = 0;
 
 // Handle Local Connector / ESP32 connection
 function handleConnectorConnection(ws) {
@@ -1143,16 +1277,13 @@ function handleConnectorConnection(ws) {
       rxBytesTotal += data.length;
       packetsForwarded++;
 
-      // Inspect incoming packet for mission events
-      inspectMavlinkPacket(data, 'RX');
+      // Zero-copy binary demultiplexing for MAVLink v2 & v1 packets
+      mavlinkMux.demultiplex(data, 'RX');
 
-      // ULTRA-FAST ZERO-COPY FORWARDING:
-      // Transmit directly to all open browsers with no queuing and no compression delay
+      // ULTRA-FAST ZERO-COPY RELAY: Forward raw binary packet to browsers
       if (browserSockets.size > 0) {
         for (const browser of browserSockets) {
           if (browser.readyState === WebSocket.OPEN) {
-            // Drop packet for this specific client if client buffer is congested (>64KB)
-            // to prevent lagging behind realtime telemetry
             if (browser.bufferedAmount < 65536) {
               browser.send(data, { binary: true, mask: false }, noop);
             }
@@ -1160,7 +1291,7 @@ function handleConnectorConnection(ws) {
         }
       }
     } else {
-      // JSON control message
+      // JSON control message from ESP32 or Companion computer
       try {
         const text = data.toString();
         const msg = JSON.parse(text);
@@ -1184,8 +1315,7 @@ function handleConnectorConnection(ws) {
             timestamp: msg.timestamp || Date.now(),
             status: 'QR_DECODED'
           };
-          reconDetections = [detection, ...reconDetections.slice(0, MAX_RECON_DETECTIONS - 1)];
-          saveJsonAtomic(DETECTIONS_FILE, reconDetections);
+          persistDetection(detection, reconDetections, MAX_RECON_DETECTIONS);
 
           const alertBroadcast = JSON.stringify(latestQrAlert);
           const qrTwoDigitMsg = JSON.stringify({
@@ -1228,6 +1358,7 @@ function handleConnectorConnection(ws) {
       connectorSocket = null;
       esp32Online = false;
       esp32LastError = 'ESP32 connector offline';
+      commandDispatcher.clearAll('ESP32 connector disconnected');
       broadcastStatusToBrowsers();
     }
   });
@@ -1267,6 +1398,11 @@ function handleBrowserConnection(ws) {
     ws.send(initialStatus, noop);
   } catch (e) {}
 
+  // Synchronize initial telemetry frame
+  try {
+    ws.send(JSON.stringify(mavlinkMux.getState()), noop);
+  } catch (e) {}
+
   // Synchronize recent recon detections if any exist
   if (latestQrAlert) {
     try {
@@ -1300,17 +1436,16 @@ function handleBrowserConnection(ws) {
     } catch (e) {}
   }
 
-  ws.on('message', (data, isBinary) => {
+  ws.on('message', async (data, isBinary) => {
     ws.isAlive = true;
     ws.lastActiveTime = Date.now();
     if (isBinary) {
       txBytesTotal += data.length;
       
-      // Inspect outgoing packet from browser for mission events
-      inspectMavlinkPacket(data, 'TX');
+      // Zero-copy binary demultiplexing for downlink commands
+      mavlinkMux.demultiplex(data, 'TX');
 
-      // IMMEDIATE ZERO-DELAY COMMAND DISPATCH:
-      // Ground Station command (Guided, Takeoff, Arm, RTL, Joystick) forward directly to ESP32
+      // IMMEDIATE ZERO-DELAY DOWNLINK: Forward directly to ESP32
       if (connectorSocket && connectorSocket.readyState === WebSocket.OPEN) {
         connectorSocket.send(data, { binary: true, mask: false }, noop);
       }
@@ -1319,6 +1454,42 @@ function handleBrowserConnection(ws) {
       try {
         const text = data.toString();
         const msg = JSON.parse(text);
+
+        // Command dispatch request via WebSocket
+        if (msg.type === 'COMMAND_REQUEST' || msg.command) {
+          const cmdName = String(msg.command || '').toUpperCase();
+          try {
+            let res;
+            if (cmdName === 'ARM') {
+              res = await commandDispatcher.arm(Boolean(msg.force));
+            } else if (cmdName === 'DISARM') {
+              res = await commandDispatcher.disarm(Boolean(msg.force));
+            } else if (cmdName === 'SET_MODE') {
+              res = await commandDispatcher.setMode(msg.mode || 'LOITER');
+            } else if (cmdName === 'TAKEOFF') {
+              res = await commandDispatcher.takeoff(Number(msg.altitude) || 5.0);
+            } else {
+              const cmdId = parseInt(msg.command, 10);
+              res = await commandDispatcher.dispatch(cmdId, msg.params || {});
+            }
+
+            ws.send(JSON.stringify({
+              type: 'COMMAND_RESPONSE',
+              requestId: msg.requestId,
+              ...res
+            }), noop);
+          } catch (cmdErr) {
+            ws.send(JSON.stringify({
+              type: 'COMMAND_RESPONSE',
+              requestId: msg.requestId,
+              success: false,
+              error: cmdErr.message,
+              code: cmdErr.code || 'COMMAND_FAILED'
+            }), noop);
+          }
+          return;
+        }
+
         if ((msg.type === 'RECON_DETECTION_BROADCAST' || msg.type === 'QR_TWO_DIGIT_DETECTED') && (msg.detection || msg.twoDigitCode)) {
           const detection = msg.detection || {
             detectionId: `DET_${Date.now()}`,
@@ -1332,7 +1503,8 @@ function handleBrowserConnection(ws) {
             timestamp: msg.timestamp || Date.now(),
             status: 'QR_DECODED'
           };
-          reconDetections = [detection, ...reconDetections.slice(0, MAX_RECON_DETECTIONS - 1)];
+          persistDetection(detection, reconDetections, MAX_RECON_DETECTIONS);
+
           const broadcastMsg = JSON.stringify({
             type: 'RECON_DETECTION_EVENT',
             detection,
@@ -1411,6 +1583,7 @@ const heartbeatInterval = setInterval(() => {
       connectorSocket.terminate();
       connectorSocket = null;
       esp32Online = false;
+      commandDispatcher.clearAll('Connector heartbeat timed out');
       broadcastStatusToBrowsers();
     } else {
       connectorSocket.isAlive = false;
@@ -1433,7 +1606,7 @@ const heartbeatInterval = setInterval(() => {
       } catch (e) {}
     }
   }
-}, 10000); // 10-second heartbeat ensures Render load balancers never drop TLS tunnel mid-flight
+}, 10000);
 
 heartbeatInterval.unref();
 
@@ -1450,7 +1623,7 @@ if (PING_TARGET_URL && !process.env.DISABLE_KEEP_ALIVE) {
         // Silently ignore ping errors
       });
     } catch (e) {}
-  }, 240000); // Every 4 minutes (Render sleep threshold is 15 minutes)
+  }, 240000);
   keepAliveInterval.unref();
 }
 

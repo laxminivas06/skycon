@@ -1,5 +1,8 @@
 import React, { useState } from 'react';
 import { DroneTelemetry } from '../../types/mission';
+import { CanvasArtificialHorizonHUD } from './CanvasArtificialHorizonHUD';
+
+export { CanvasArtificialHorizonHUD };
 
 interface CockpitInstrumentsPanelProps {
   telemetry: DroneTelemetry;
@@ -16,6 +19,7 @@ export const CockpitInstrumentsPanel: React.FC<CockpitInstrumentsPanelProps> = (
 }) => {
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<'INSTRUMENTS' | 'TELEMETRY'>('INSTRUMENTS');
+  const [hudMode, setHudMode] = useState<'ANALOG' | 'CANVAS_60FPS'>('CANVAS_60FPS');
 
   const pitch = Math.max(-45, Math.min(45, telemetry.pitch || 0));
   const roll = Math.max(-60, Math.min(60, telemetry.roll || 0));
@@ -79,10 +83,28 @@ export const CockpitInstrumentsPanel: React.FC<CockpitInstrumentsPanelProps> = (
       <div className="flex-1 flex flex-col min-w-0 bg-[#18191d]">
         {/* Header Bar */}
         <div className="px-3 py-1.5 bg-[#1f2025] border-b border-[#2a2b30] flex items-center justify-between">
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
             <span className="font-sans text-[11px] uppercase tracking-wider font-bold text-slate-200">
               INSTRUMENTS
             </span>
+            <div className="flex items-center bg-[#141518] rounded p-0.5 border border-[#2d2e33] text-[9px] font-mono">
+              <button
+                type="button"
+                onClick={() => setHudMode('CANVAS_60FPS')}
+                className={`px-1.5 py-0.5 rounded transition-colors cursor-pointer ${hudMode === 'CANVAS_60FPS' ? 'bg-sky-600 text-white font-bold' : 'text-slate-400 hover:text-white'}`}
+                title="60 FPS HTML5 Canvas PFD HUD (Driven by requestAnimationFrame)"
+              >
+                60FPS HUD
+              </button>
+              <button
+                type="button"
+                onClick={() => setHudMode('ANALOG')}
+                className={`px-1.5 py-0.5 rounded transition-colors cursor-pointer ${hudMode === 'ANALOG' ? 'bg-sky-600 text-white font-bold' : 'text-slate-400 hover:text-white'}`}
+                title="Analog Instruments Cluster"
+              >
+                GAUGES
+              </button>
+            </div>
           </div>
           <div className="flex items-center gap-1.5">
             {onOpenSettings && (
@@ -119,7 +141,24 @@ export const CockpitInstrumentsPanel: React.FC<CockpitInstrumentsPanelProps> = (
           </div>
         </div>
 
-        {!isCollapsed && (
+        {!isCollapsed && hudMode === 'CANVAS_60FPS' && (
+          <div className="p-2 bg-[#17181c] h-[290px]">
+            <CanvasArtificialHorizonHUD
+              telemetry={telemetry}
+              pitchDeg={pitch}
+              rollDeg={roll}
+              headingDeg={heading}
+              verticalSpeedMps={vSpeed}
+              altitudeMeters={alt}
+              groundSpeedMps={speed}
+              isArmed={telemetry.isArmed}
+              flightMode={telemetry.flightMode}
+              height={270}
+            />
+          </div>
+        )}
+
+        {!isCollapsed && hudMode === 'ANALOG' && (
           <div className="p-2 grid grid-cols-2 gap-2 overflow-y-auto max-h-[290px] scrollbar-none bg-[#17181c]">
             {/* ======================================================== */}
             {/* GAUGE 1: ATTITUDE INDICATOR (Artificial Horizon)         */}
