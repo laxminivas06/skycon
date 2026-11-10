@@ -7,7 +7,7 @@
 # SECTION 1: 5.0M ALTITUDE LOCK & TAKEOFF / RTL ENVELOPE (FIXES 10M OVERRIDE)
 # ==============================================================================
 PILOT_TKOFF_ALT,500
-RTL_ALT,500
+RTL_ALT,1500
 RTL_ALT_FINAL,0
 RTL_CLIMB_MIN,0
 WPNAV_RADIUS,150
