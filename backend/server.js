@@ -6,6 +6,7 @@ import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { parse } from 'url';
+import Anthropic from '@anthropic-ai/sdk';
 
 import atomicStore, {
   saveJsonAtomic,
@@ -68,6 +69,15 @@ const MIME_TYPES = {
 
 const PORT = process.env.PORT || 8443;
 const RELAY_TOKEN = process.env.RELAY_TOKEN || 'saeindia_secret_token_2026';
+
+// Anthropic Claude client — used by /api/ai/chat
+// ponytail: single lazy instance; skip if key absent (graceful degradation)
+const anthropic = process.env.ANTHROPIC_API_KEY
+  ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+  : null;
+if (!anthropic) {
+  console.warn('[AI] ANTHROPIC_API_KEY not set — /api/ai/chat will return 503. Set the key in .env to enable.');
+}
 
 // Global relay state
 let connectorSocket = null;
@@ -1089,6 +1099,77 @@ const server = http.createServer((req, res) => {
       esp32Online,
       browserClientsCount: browserSockets.size
     }));
+    return;
+  }
+
+
+  // 12. Claude AI Chat — GCS operator queries, diagnostic analysis, mission briefing
+  // POST /api/ai/chat  { messages: [{role, content}], system?: string }
+  // Returns: { role: 'assistant', content: string }
+  if (parsedUrl.pathname === '/api/ai/chat' && req.method === 'POST') {
+    if (!anthropic) {
+      res.writeHead(503, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: 'AI service unavailable: ANTHROPIC_API_KEY not configured on server.' }));
+      return;
+    }
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const { messages = [], system } = JSON.parse(body || '{}');
+        if (!messages.length) {
+          res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({ error: 'messages array is required' }));
+          return;
+        }
+
+        // Inject live telemetry snapshot as extra context if no system prompt given
+        const telem = mavlinkMux.getLatestTelemetry?.() ?? {};
+        const activeMission = getActiveMission();
+        const systemPrompt = system || [
+          'You are the AI assistant for SKYCON, the ground station for a SAE INDIA ADDC 2026 autonomous drone.',
+          'Hardware: ESP32-S3 brain, Pixhawk 2.4.8 (ArduCopter 4.7.2), Android phone vision, S500 frame, 3S LiPo.',
+          'Answer operator questions about mission status, telemetry, flight-controller errors, and QR detections.',
+          'Be concise and accurate. If uncertain, say so rather than guessing.',
+          telem.altitude !== undefined ? `Current telemetry: alt=${telem.altitude?.toFixed?.(1) ?? 'N/A'}m, mode=${telem.flightMode ?? 'N/A'}, armed=${telem.isArmed ?? false}, sats=${telem.satellites ?? 0}, batt=${telem.batteryVoltage?.toFixed?.(1) ?? 'N/A'}V.` : '',
+          activeMission ? `Active mission: ${activeMission.missionId}, status: ${activeMission.status}.` : 'No active mission.'
+        ].filter(Boolean).join(' ');
+
+        const response = await anthropic.messages.create({
+          model: 'claude-sonnet-4-5',
+          max_tokens: 1024,
+          system: systemPrompt,
+          messages
+        });
+
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'no-cache, no-store'
+        });
+        res.end(JSON.stringify({
+          role: 'assistant',
+          content: response.content?.[0]?.text ?? '',
+          usage: response.usage
+        }));
+      } catch (err) {
+        console.error('[AI] /api/ai/chat error:', err?.message || err);
+        const status = err?.status ?? 500;
+        res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ error: err?.message || 'AI request failed' }));
+      }
+    });
+    return;
+  }
+
+  // Handle CORS pre-flight for /api/ai/chat
+  if (parsedUrl.pathname === '/api/ai/chat' && req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type'
+    });
+    res.end();
     return;
   }
 
