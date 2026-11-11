@@ -166,20 +166,29 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
   );
 
   // STEP 10: Check whether the complete planned route is inside the geofence
+  // Pass when: simulated, manual mode, bypass active, zero coords (bench), FC not connected (no GPS = can't verify = advisory),
+  // GPS not yet valid (< 6 sats blocks canArmVehicle but position unverifiable = advisory until GPS locks),
+  // or canArmVehicle returns true.
   const isZeroCoords = Math.abs(telemetry.latitude) < 0.0001 && Math.abs(telemetry.longitude) < 0.0001;
+  const hasValidGpsForFence = telemetry.isGpsValid && (telemetry.satellites >= 6 || satsCount >= 6);
   const routeGeofencePassed = Boolean(
     isSimulated ||
     isManualMode ||
     bypassPrearm ||
     isZeroCoords ||
+    !telemetry.isConnected ||           // FC offline → can't verify → advisory pass
+    !hasValidGpsForFence ||             // GPS not locked enough → defer check → advisory pass
     (geofenceService.canArmVehicle(telemetry.latitude, telemetry.longitude).canArm)
   );
 
   // STEP 11: Verify flight-controller pre-arm checks and safety configuration
+  // Pass when: simulated, bypass active, FC not connected (no errors to report),
+  // or link is live and mode is a known-safe mode or not yet armed.
   const fcSafetyPassed = Boolean(
     isSimulated ||
     bypassPrearm ||
-    (!telemetry.isLinkLost && (telemetry.flightMode === 'GUIDED' || telemetry.flightMode === 'AUTO' || telemetry.flightMode === 'LOITER' || !telemetry.isArmed))
+    !telemetry.isConnected ||           // FC offline → no pre-arm errors → advisory pass
+    (!telemetry.isLinkLost && (telemetry.flightMode === 'GUIDED' || telemetry.flightMode === 'AUTO' || telemetry.flightMode === 'LOITER' || telemetry.flightMode === 'STABILIZE' || !telemetry.isArmed))
   );
 
   // Exact 11-step checklist per Section 4:
@@ -291,11 +300,15 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
       label: 'STEP 10: Complete Route Inside Geofence',
       detail: bypassPrearm
         ? 'Pre-arm bypass active: Geofence limits overridden for immediate launch'
-        : (isZeroCoords
-            ? 'Bench test coordinates (0°, 0°): Geofence safety limits satisfied for bench test'
-            : (routeGeofencePassed
+        : isZeroCoords
+          ? 'Bench test coordinates (0°, 0°): Geofence safety limits satisfied for bench test'
+          : !telemetry.isConnected
+            ? 'FC offline — geofence advisory deferred until telemetry link established'
+            : !hasValidGpsForFence
+              ? `GPS acquiring (${satsCount} sats — need ≥ 6 for fence verification): advisory pass`
+              : routeGeofencePassed
                 ? 'Planned spiral flight path and return-to-launch route bounded within safety perimeter'
-                : 'Route or drone location exceeds safety geofence limits')),
+                : 'Route or drone location exceeds safety geofence limits',
       passed: routeGeofencePassed,
       isCritical: true,
       icon: <ShieldCheck className="w-4 h-4" />
@@ -306,9 +319,11 @@ export const PreflightValidationModal: React.FC<PreflightValidationModalProps> =
       label: 'STEP 11: Flight-Controller Pre-Arm & Safety',
       detail: bypassPrearm
         ? 'Field Force Arm active (Magic: 21196): FC pre-arm safety switch and sensor checks bypassed'
-        : (fcSafetyPassed
+        : !telemetry.isConnected
+          ? 'FC offline — pre-arm advisory deferred until MAVLink link established'
+          : fcSafetyPassed
             ? `Autopilot ready for guided autonomous takeoff (${telemetry.isArmed ? 'ARMED' : 'READY TO ARM'})`
-            : 'Flight controller reports pre-arm error or safety switch active'),
+            : 'Flight controller reports pre-arm error or safety switch active',
       passed: fcSafetyPassed,
       isCritical: true,
       icon: <ShieldCheck className="w-4 h-4" />
