@@ -27,6 +27,7 @@ import { FlightOperationsCard } from './FlightOperationsCard';
 import { ManualMissionControlCard } from './ManualMissionControlCard';
 import { AutonomousMissionControlCard } from './AutonomousMissionControlCard';
 import { PreflightValidationModal } from './PreflightValidationModal';
+import { AIChatPanel } from './AIChatPanel';
 import { MapPanel } from './MapPanel';
 import { CameraFeed } from './CameraFeed';
 import { QrVisionTelemetryCard } from './QrVisionTelemetryCard';
@@ -154,6 +155,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   const [isDiagnosticsModalOpen, setIsDiagnosticsModalOpen] = useState<boolean>(false);
   const [isComprehensiveDiagOpen, setIsComprehensiveDiagOpen] = useState<boolean>(false);
   const [isFlightControlModalOpen, setIsFlightControlModalOpen] = useState<boolean>(false);
+  const [isAIChatModalOpen, setIsAIChatModalOpen] = useState<boolean>(false);
 
   const showNotification = (msg: string) => {
     setActionNotice(msg);
@@ -186,6 +188,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       setActiveTab('Logs');
     } else if (nav === 'Flight Control') {
       setIsFlightControlModalOpen(true);
+    } else if (nav === 'AI Assistant') {
+      setIsAIChatModalOpen(true);
     } else if (nav === 'Dashboard' || nav === 'Cockpit') {
       setActiveTab('Fly');
       setActiveNav('Dashboard');
@@ -1017,6 +1021,26 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 Close
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 9b. SKYCON Claude AI Assistant Modal */}
+      {isAIChatModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 select-none">
+          <div className="bg-[#161B22] border-2 border-emerald-500/80 rounded-[14px] max-w-xl w-full h-[620px] max-h-[90vh] text-white shadow-2xl overflow-hidden flex flex-col relative">
+            <button
+              type="button"
+              onClick={() => {
+                setIsAIChatModalOpen(false);
+                setActiveNav('Dashboard');
+              }}
+              className="absolute top-3 right-3 text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 cursor-pointer z-10"
+              title="Close AI Assistant"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <AIChatPanel />
           </div>
         </div>
       )}

@@ -8,6 +8,7 @@ import {
   AlertTriangle,
   Gamepad2,
   Power,
+  Bot,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -37,6 +38,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'Dashboard', label: 'Cockpit', icon: <LayoutDashboard className="w-4 h-4" /> },
     { id: 'Mission', label: 'Mission Plan', icon: <Compass className="w-4 h-4" /> },
     { id: 'Flight Control', label: 'Flight Control', icon: <Crosshair className="w-4 h-4" /> },
+    { id: 'AI Assistant', label: 'AI Assistant', icon: <Bot className="w-4 h-4" /> },
     { id: 'Logs', label: 'Flight Logs', icon: <FileText className="w-4 h-4" /> },
     { id: 'Diagnostics', label: 'Serial Link', icon: <SlidersHorizontal className="w-4 h-4" /> },
   ];
